@@ -62,7 +62,7 @@ PARAM_EN = {
 
 # ---------------------------- 页面配置 ----------------------------
 st.set_page_config(page_title="项目经济性分析平台", layout="wide")
-st.title("项目成本敏感性分析平台")
+st.title("项目成本计算与敏感性分析平台")
 
 # ---------------------------- 侧边栏：指标选择 ----------------------------
 st.sidebar.header("📌 分析方法选择")
@@ -320,7 +320,8 @@ with tab1:
             pivot = df.pivot(index="Parameter", columns="Direction", values=target).reset_index()
             pivot["Range"] = pivot["High"] - pivot["Low"]
             st.subheader("📋 Sensitivity Table")
-            st.dataframe(pivot.style.format("{:.4f}"))
+            # 修复：只对数值列应用格式化，避免字符串列报错
+            st.dataframe(pivot.style.format(subset=["Low", "High", "Range"], formatter="{:.4f}"))
 
             # Tornado chart (English)
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -375,7 +376,7 @@ with tab2:
                         irr_t = compute_irr(I_t, cf_t, n_t)
                         grid[i,j] = irr_t*100 if not np.isnan(irr_t) else np.nan
                     else: grid[i,j] = compute_lcoh(I_t, r_t, n_t, C_t, Q_t)
-            # Data table
+            # Data table (所有单元格均为数值，可直接格式化)
             df_grid = pd.DataFrame(grid,
                                    index=[f"{y*100:+.0f}%" for y in ys],
                                    columns=[f"{x*100:+.0f}%" for x in xs])
@@ -454,7 +455,8 @@ with tab3:
                     "Total-effect (ST)": Si['ST']
                 })
                 st.subheader("📋 Sobol Indices Table")
-                st.dataframe(df_si.style.format("{:.4f}"))
+                # 修复：只格式化数值列
+                st.dataframe(df_si.style.format(subset=["First-order (S1)", "Total-effect (ST)"], formatter="{:.4f}"))
 
                 # Bar chart
                 fig, ax = plt.subplots(figsize=(8, 5))
