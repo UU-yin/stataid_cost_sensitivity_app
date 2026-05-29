@@ -85,8 +85,8 @@ def loan_schedule(principal, annual_rate, years, method='等额本息'):
         return payments, interests
 
 # ---------- 页面设置 ----------
-st.set_page_config(page_title="氢能项目经济性分析平台", layout="wide")
-st.title("🔋 氢能项目 NPV / IRR / LCOH 计算与敏感性分析平台")
+st.set_page_config(page_title="项目经济性分析平台", layout="wide")
+st.title("项目成本计算与敏感性分析平台")
 
 # ---------- 侧边栏 ----------
 st.sidebar.header("📌 分析方法选择")
