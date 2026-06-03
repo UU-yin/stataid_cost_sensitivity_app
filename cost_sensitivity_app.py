@@ -527,7 +527,7 @@ with tab1:
         selected = st.multiselect("选择参数", relevant, default=relevant[:3], key="single_multiselect")
         range_choice = st.selectbox("变动范围", ["±10%", "±20%", "±30%", "自定义"], index=1)
         if range_choice == "自定义":
-            pct = st.number_input("变动百分比 (%)", 20.0, step=1.0)
+            pct = st.number_input("变动百分比 (%)", value=20.0, step=1.0)
             levels = [-pct, pct]
         else:
             pct = int(range_choice.replace("±", "").replace("%", ""))
@@ -538,8 +538,8 @@ with tab1:
         if use_abs:
             for pname in selected:
                 c1, c2 = st.columns(2)
-                with c1: down = st.number_input(f"{pname} 减少量", 0.0, key=f"abs_d_{pname}")
-                with c2: up = st.number_input(f"{pname} 增加量", 0.0, key=f"abs_u_{pname}")
+                with c1: down = st.number_input(f"{pname} 减少量", value=0.0, key=f"abs_d_{pname}")
+                with c2: up = st.number_input(f"{pname} 增加量", value=0.0, key=f"abs_u_{pname}")
                 abs_dict[pname] = (down, up)
 
         if st.button("运行单因素分析", key="run_single"):
@@ -659,7 +659,7 @@ with tab3:
         base3 = get_base_params()
         relevant3 = get_relevant(target3)
         selected_sobol = st.multiselect("选择参数", relevant3, default=relevant3[:3], key="sobol_multiselect")
-        sample_N = st.number_input("基础样本数 N", 256, min_value=64, step=64, help="总运行次数 = N*(2D+2)")
+        sample_N = st.number_input("基础样本数 N", value=256, min_value=64, step=64, help="总运行次数 = N*(2D+2)")
         if st.button("运行 Sobol 分析", key="run_sobol"):
             if len(selected_sobol) < 2:
                 st.warning("至少选择两个参数")
