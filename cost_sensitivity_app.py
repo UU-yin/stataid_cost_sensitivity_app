@@ -211,10 +211,8 @@ if input_mode == "手动输入":
         loan_amount = I * loan_ratio
         if loan_amount > 0:
             annual_payments, interest_list = loan_schedule(loan_amount, loan_rate, loan_years, repay_method)
-            # 利息只在前 loan_years 年发生，后面为0
             full_interests = np.zeros(n_base)
             full_interests[:loan_years] = interest_list
-            # 利息支出影响现金流：通常利息作为财务费用，可税前扣除，简化：直接从净现金流中扣除利息
             if np.isscalar(cf_series):
                 cf_series = np.full(n_base, cf_series)
             cf_series = np.asarray(cf_series) - np.array(full_interests)
@@ -236,7 +234,7 @@ if input_mode == "手动输入":
         if replacements and np.isscalar(cf_series):
             cf_series = np.full(n_base, cf_series)
         for yr, cst in replacements:
-            cf_series[yr-1] -= cst  # 第yr年额外支出
+            cf_series[yr-1] -= cst
 
     # ---------- 碳排放与碳收益 ----------
     if use_carbon:
@@ -249,10 +247,8 @@ if input_mode == "手动输入":
         with col_c3:
             green_cert_price = st.number_input("绿证价格 (元/个)", value=7.76, step=0.5)
         annual_green_gen = st.number_input("年自发绿电量 (万kWh)", value=6000.0, step=100.0)
-        # 计算碳收益（万元/年）
-        carbon_revenue = annual_green_gen * emission_factor / 1000 * carbon_price + annual_green_gen * green_cert_price / 10000  # 绿证一个对应1000kWh? 假设1个=1000kWh
+        carbon_revenue = annual_green_gen * emission_factor / 1000 * carbon_price + annual_green_gen * green_cert_price / 10000
         st.caption(f"估算年碳收益约 {carbon_revenue:.2f} 万元")
-        # 将碳收益加入净现金流（如果使用简单输入则提示）
         if not use_advanced_cf:
             if np.isscalar(cf_series):
                 cf_series = np.full(n_base, cf_series)
@@ -307,9 +303,7 @@ if input_mode == "手动输入":
     lcoh_val = lcoh(I, r_base, n_base, C_op, Q) if "LCOH" in targets_to_show else None
     lcoe_val = None
     if use_lcoe:
-        lcoe_val = lcoe(I, r_base, n_base, C_op, Q)  # Q此时为年发电量（万kWh）-> 注意单位
-        # 如果选了LCOE，则Q已经作为发电量输入，需要提醒用户
-        lcoe_val = lcoe(I, r_base, n_base, C_op, Q)  # 万元/万kWh -> 元/kWh 直接数值一致
+        lcoe_val = lcoe(I, r_base, n_base, C_op, Q)
 
     # 显示指标卡片
     cols = st.columns(len(targets_to_show) + (1 if use_lcoe else 0))
@@ -397,7 +391,6 @@ if use_multi_scenario and input_mode == "手动输入":
                 "IRR (%)": irr_val*100 if not np.isnan(irr_val) else np.nan
             })
         st.dataframe(pd.DataFrame(results))
-        # 增量现金流分析（方案2 vs 方案1）
         if len(case_params) >= 2:
             delta_I = case_params[1]['I'] - case_params[0]['I']
             delta_cf = np.array(case_params[1]['cf']) - np.array(case_params[0]['cf'])
@@ -415,7 +408,6 @@ if use_breakeven and use_multi_scenario and input_mode == "手动输入":
             var_index = 1
         elif target_var == "年净现金流":
             var_index = 2
-        # 简化：二分法调整变量使NPV1=NPV2
         def diff_npv(x):
             p1 = case_params[0].copy()
             p2 = case_params[1].copy()
@@ -423,7 +415,6 @@ if use_breakeven and use_multi_scenario and input_mode == "手动输入":
             elif var_index == 1: p1['r'] = x
             else: p1['cf'] = np.full(p1['n'], x)
             return npv(p1['I'], p1['cf'], p1['r'], p1['n']) - npv(p2['I'], p2['cf'], p2['r'], p2['n'])
-        # 简单二分搜索
         try:
             low = 0.1; high = 1000
             for _ in range(30):
@@ -451,12 +442,10 @@ if use_matrix and input_mode == "手动输入":
     prices = np.linspace(price_range[0], price_range[1], steps)
     hours = np.linspace(hour_range[0], hour_range[1], steps)
     carbons = np.linspace(carbon_range[0], carbon_range[1], steps)
-    # 生成三维矩阵 NPV
     grid = np.zeros((len(prices), len(hours)))
     for i, pr in enumerate(prices):
         for j, hr in enumerate(hours):
-            # 假设收益与电价和利用小时数成正比
-            annual_rev = hr * pr * 10  # 假设装机10MW，万kWh -> 万元
+            annual_rev = hr * pr * 10
             cf_adj = annual_rev - C_op
             grid[i,j] = npv(I, cf_adj, r_base, n_base)
     df_matrix = pd.DataFrame(grid, index=[f"{p:.2f}" for p in prices], columns=[f"{h:.0f}h" for h in hours])
@@ -471,6 +460,27 @@ if use_matrix and input_mode == "手动输入":
 
 # ---------- 敏感性分析 ----------
 st.header("📈 敏感性分析")
+
+# ---------- 参数中英文映射（必须定义在 tabs 之前） ----------
+param_names_cn = {
+    "初始投资 I (万元)": "初始投资 I",
+    "年净现金流 (万元)": "年净现金流",
+    "折现率 r": "折现率 r",
+    "项目寿命 n (年)": "项目寿命 n",
+    "年运营成本 C_op (万元)": "年运营成本",
+    "年制氢量 Q (kg)": "年制氢量",
+    "年发电量 (万kWh)": "年发电量"
+}
+param_names_en = {
+    "初始投资 I (万元)": "Initial Investment",
+    "年净现金流 (万元)": "Annual Net CF",
+    "折现率 r": "Discount Rate",
+    "项目寿命 n (年)": "Project Life",
+    "年运营成本 C_op (万元)": "Annual OPEX",
+    "年制氢量 Q (kg)": "Annual H2 Output",
+    "年发电量 (万kWh)": "Annual Power Gen"
+}
+
 tab1, tab2, tab3 = st.tabs(["单因素分析", "双因素分析", "全局敏感性 (Sobol)"])
 
 def get_base_params():
@@ -487,10 +497,6 @@ def update_param(pname, new_val, base):
     elif "运营成本" in pname: C_op = new_val
     elif "制氢量" in pname or "发电量" in pname: Q = new_val
     return I, r, n, C_op, Q, cf
-
-# 中英文参数映射保持不变...
-param_names_cn = { ... }   # 与原代码相同
-param_names_en = { ... }   # 与原代码相同
 
 def get_relevant(target):
     if target in ["NPV", "IRR"]:
@@ -544,7 +550,7 @@ with tab1:
                 if change_type == 'relative':
                     low_ch, high_ch = levels
                 else:
-                    down, up = abs_dict.get(pname, (0.0, 0.0))   # 安全获取，防止KeyError
+                    down, up = abs_dict.get(pname, (0.0, 0.0))
                     low_ch, high_ch = -down, up
                 for tag, ch in [("Low", low_ch), ("High", high_ch)]:
                     new_val = base_val * (1 + ch/100) if change_type == 'relative' else base_val + ch
@@ -555,10 +561,11 @@ with tab1:
                         val = val*100 if not np.isnan(val) else np.nan
                     elif target == "LCOH": val = lcoh(I_t, r_t, n_t, C_t, Q_t)
                     else: val = lcoe(I_t, r_t, n_t, C_t, Q_t)
-                    results.append({"参数": param_names_cn.get(pname, pname), "方向": tag, "变动": f"{ch:+.1f}%", target: val})
+                    # 使用安全的字典访问
+                    display_name = param_names_cn.get(pname, pname)
+                    results.append({"参数": display_name, "方向": tag, "变动": f"{ch:+.1f}%", target: val})
             df = pd.DataFrame(results)
             pivot = df.pivot(index="参数", columns="方向", values=target).reset_index()
-            # 剔除含有NaN的行，避免绘图错误
             pivot_clean = pivot.dropna(subset=["Low", "High"])
             if len(pivot_clean) < len(pivot):
                 st.warning("部分参数计算结果为NaN，已自动从龙卷风图中剔除。")
@@ -566,7 +573,6 @@ with tab1:
             st.subheader("📋 敏感性数据表")
             st.dataframe(pivot_clean.style.format(subset=["Low", "High", "变化范围"], formatter="{:.4f}"))
 
-            # 龙卷风图（英文坐标）
             if len(pivot_clean) > 0:
                 fig, ax = plt.subplots(figsize=(10, 6))
                 params_en = [param_names_en.get(p, p) for p in pivot_clean["参数"]]
@@ -598,10 +604,12 @@ with tab2:
         relevant2 = get_relevant(target2)
         col_a, col_b = st.columns(2)
         with col_a:
-            param_x = st.selectbox("X轴参数", relevant2, index=0, format_func=lambda x: param_names_cn[x])
+            param_x = st.selectbox("X轴参数", relevant2, index=0,
+                                   format_func=lambda x: param_names_cn.get(x, x))
             x_range = st.slider("X变动范围 (%)", -50, 50, (-20, 20), 5)
         with col_b:
-            param_y = st.selectbox("Y轴参数", relevant2, index=min(1, len(relevant2)-1), format_func=lambda x: param_names_cn[x])
+            param_y = st.selectbox("Y轴参数", relevant2, index=min(1, len(relevant2)-1),
+                                   format_func=lambda x: param_names_cn.get(x, x))
             y_range = st.slider("Y变动范围 (%)", -50, 50, (-20, 20), 5)
 
         if st.button("生成热力图及表格", key="run_dual"):
@@ -614,7 +622,8 @@ with tab2:
                     I_t, r_t, n_t, C_t, Q_t, cf_t = base2['I'], base2['r'], base2['n'], base2['C_op'], base2['Q'], base2['cf']
                     for pname, chg in [(param_x, dx), (param_y, dy)]:
                         new_val = param_dict2[pname] * (1 + chg)
-                        I_t, r_t, n_t, C_t, Q_t, cf_t = update_param(pname, new_val, {'I':I_t,'r':r_t,'n':n_t,'C_op':C_t,'Q':Q_t,'cf':cf_t})
+                        I_t, r_t, n_t, C_t, Q_t, cf_t = update_param(pname, new_val,
+                                                                      {'I':I_t,'r':r_t,'n':n_t,'C_op':C_t,'Q':Q_t,'cf':cf_t})
                     if target2 == "NPV": grid[i,j] = npv(I_t, cf_t, r_t, n_t)
                     elif target2 == "IRR":
                         irr_t = irr(I_t, cf_t, n_t)
@@ -626,8 +635,8 @@ with tab2:
                 st.warning("部分组合的IRR无解，热力图中将NaN替换为0显示。")
                 grid = np.nan_to_num(grid, nan=0.0)
             df_grid = pd.DataFrame(grid, index=[f"{y*100:+.0f}%" for y in ys], columns=[f"{x*100:+.0f}%" for x in xs])
-            df_grid.index.name = f"{param_names_cn[param_y]} 变化"
-            df_grid.columns.name = f"{param_names_cn[param_x]} 变化"
+            df_grid.index.name = f"{param_names_cn.get(param_y, param_y)} 变化"
+            df_grid.columns.name = f"{param_names_cn.get(param_x, param_x)} 变化"
             st.subheader("📋 网格数据表")
             st.dataframe(df_grid.style.format("{:.4f}"))
 
