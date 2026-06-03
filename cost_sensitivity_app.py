@@ -461,7 +461,7 @@ if use_matrix and input_mode == "手动输入":
 # ---------- 敏感性分析 ----------
 st.header("📈 敏感性分析")
 
-# ---------- 参数中英文映射（必须定义在 tabs 之前） ----------
+# ---------- 参数中英文映射 ----------
 param_names_cn = {
     "初始投资 I (万元)": "初始投资 I",
     "年净现金流 (万元)": "年净现金流",
@@ -524,7 +524,7 @@ with tab1:
             "年发电量 (万kWh)": base['Q']
         }
         relevant = get_relevant(target)
-        selected = st.multiselect("选择参数", relevant, default=relevant[:3])
+        selected = st.multiselect("选择参数", relevant, default=relevant[:3], key="single_multiselect")
         range_choice = st.selectbox("变动范围", ["±10%", "±20%", "±30%", "自定义"], index=1)
         if range_choice == "自定义":
             pct = st.number_input("变动百分比 (%)", 20.0, step=1.0)
@@ -561,7 +561,6 @@ with tab1:
                         val = val*100 if not np.isnan(val) else np.nan
                     elif target == "LCOH": val = lcoh(I_t, r_t, n_t, C_t, Q_t)
                     else: val = lcoe(I_t, r_t, n_t, C_t, Q_t)
-                    # 使用安全的字典访问
                     display_name = param_names_cn.get(pname, pname)
                     results.append({"参数": display_name, "方向": tag, "变动": f"{ch:+.1f}%", target: val})
             df = pd.DataFrame(results)
@@ -605,11 +604,11 @@ with tab2:
         col_a, col_b = st.columns(2)
         with col_a:
             param_x = st.selectbox("X轴参数", relevant2, index=0,
-                                   format_func=lambda x: param_names_cn.get(x, x))
+                                   format_func=lambda x: param_names_cn.get(x, x), key="dual_param_x")
             x_range = st.slider("X变动范围 (%)", -50, 50, (-20, 20), 5)
         with col_b:
             param_y = st.selectbox("Y轴参数", relevant2, index=min(1, len(relevant2)-1),
-                                   format_func=lambda x: param_names_cn.get(x, x))
+                                   format_func=lambda x: param_names_cn.get(x, x), key="dual_param_y")
             y_range = st.slider("Y变动范围 (%)", -50, 50, (-20, 20), 5)
 
         if st.button("生成热力图及表格", key="run_dual"):
@@ -659,7 +658,7 @@ with tab3:
         target3 = st.selectbox("输出指标", targets_to_show + (["LCOE"] if use_lcoe else []), key="sobol_target")
         base3 = get_base_params()
         relevant3 = get_relevant(target3)
-        selected_sobol = st.multiselect("选择参数", relevant3, default=relevant3[:3])
+        selected_sobol = st.multiselect("选择参数", relevant3, default=relevant3[:3], key="sobol_multiselect")
         sample_N = st.number_input("基础样本数 N", 256, min_value=64, step=64, help="总运行次数 = N*(2D+2)")
         if st.button("运行 Sobol 分析", key="run_sobol"):
             if len(selected_sobol) < 2:
@@ -723,4 +722,4 @@ with tab3:
                     st.pyplot(fig)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("氢能项目经济性分析平台 v2.0")
+st.sidebar.caption("项目经济性分析平台 v2.0")
