@@ -11,7 +11,7 @@ try:
 except ImportError:
     from scipy.optimize import newton
     def IRR_FUNC(cashflows):
-        cashflows = np.asarray(cashflows)
+        cashflows = np.asarray(cashflows, dtype=float)
         if np.all(cashflows >= 0) or np.all(cashflows <= 0):
             return np.nan
         try:
@@ -27,7 +27,7 @@ try:
 except ImportError:
     SALIB_AVAILABLE = False
 
-# ---------- 核心公式 ----------
+# ---------- 核心公式（增强防御） ----------
 def crf(r, n):
     """资本回收系数"""
     return (r * (1 + r)**n) / ((1 + r)**n - 1) if r != 0 else 1/n
@@ -35,12 +35,27 @@ def crf(r, n):
 def npv(I, cf, r, n):
     """净现值：Σ CF_t/(1+r)^t - I"""
     t = np.arange(1, n + 1)
-    cfs = np.full(n, cf) if np.isscalar(cf) else np.asarray(cf)[:n]
+    # 将 cf 转换为一维浮点数组，缺失部分补0
+    if np.isscalar(cf):
+        cfs = np.full(n, cf, dtype=float)
+    else:
+        cfs = np.asarray(cf, dtype=float).ravel()
+        if len(cfs) < n:
+            cfs = np.pad(cfs, (0, n - len(cfs)), constant_values=0)
+        else:
+            cfs = cfs[:n]
     return np.sum(cfs / (1 + r)**t) - I
 
 def irr(I, cf, n):
     """内部收益率"""
-    cfs = np.full(n, cf) if np.isscalar(cf) else np.asarray(cf)[:n]
+    if np.isscalar(cf):
+        cfs = np.full(n, cf, dtype=float)
+    else:
+        cfs = np.asarray(cf, dtype=float).ravel()
+        if len(cfs) < n:
+            cfs = np.pad(cfs, (0, n - len(cfs)), constant_values=0)
+        else:
+            cfs = cfs[:n]
     return IRR_FUNC(np.insert(cfs, 0, -I))
 
 def lcoh(I, r, n, C_op, Q):
@@ -57,7 +72,7 @@ def lcoe(I, r, n, C_op, Q_gen):
 
 # ---------- 辅助：融资还款计算 ----------
 def loan_schedule(principal, annual_rate, years, method='等额本息'):
-    """返回每年还款额和利息列表（简化：年还款，等额本息或等额本金）"""
+    """返回每年还款额和利息列表"""
     if method == '等额本息':
         if annual_rate == 0:
             annual_payment = principal / years
@@ -114,13 +129,11 @@ use_matrix = st.sidebar.checkbox("多场景矩阵分析", value=False)
 st.header("📥 数据输入")
 input_mode = st.radio("输入方式", ["手动输入", "上传文件 (CSV/Excel)"], horizontal=True)
 
-# 存放参数
 if 'params' not in st.session_state:
     st.session_state.params = {}
 
 # ---------- 手动输入 ----------
 if input_mode == "手动输入":
-    # 基本参数
     has_lcoh = "LCOH" in st.session_state.selected_targets
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -142,7 +155,6 @@ if input_mode == "手动输入":
 
     # ---------- 现金流构建 ----------
     if not use_advanced_cf:
-        # 简单模式
         st.subheader("净现金流设置")
         cf_mode = st.radio("现金流类型", ["等额年金（各年相同）", "逐年输入"], horizontal=True)
         if cf_mode == "等额年金（各年相同）":
@@ -150,13 +162,14 @@ if input_mode == "手动输入":
             cf_series = cf_val
         else:
             cf_str = st.text_area("各年净现金流，逗号分隔（万元）", "300,300,300,300,300")
-            cf_series = [float(x.strip()) for x in cf_str.split(",") if x.strip() != ""]
+            try:
+                cf_series = [float(x.strip()) for x in cf_str.split(",") if x.strip() != ""]
+            except:
+                st.error("现金流格式错误，将使用默认值300")
+                cf_series = 300.0
     else:
-        # 高级分项构建器
         st.subheader("💵 现金流分项构建器")
         st.caption("输入各项收益与支出，自动计算每年净现金流 = 总收益 - 总支出")
-
-        # 收益项
         st.markdown("**收益项**")
         num_rev = st.number_input("收益项数量", min_value=1, value=2, step=1)
         rev_items = []
@@ -170,7 +183,6 @@ if input_mode == "手动输入":
                 growth = st.number_input(f"年增长率 (%)", value=0.0, step=0.1, key=f"rev_growth_{i}") / 100
             rev_items.append({'name': name, 'amount': amount, 'growth': growth})
 
-        # 支出项
         st.markdown("**支出项**")
         num_cost = st.number_input("支出项数量", min_value=1, value=3, step=1)
         cost_items = []
@@ -184,7 +196,6 @@ if input_mode == "手动输入":
                 growth = st.number_input(f"年增长率 (%)", value=0.0, step=0.1, key=f"cost_growth_{i}") / 100
             cost_items.append({'name': name, 'amount': amount, 'growth': growth})
 
-        # 生成现金流序列
         def generate_cf_from_items(revs, costs, n_years):
             total_rev = np.zeros(n_years)
             total_cost = np.zeros(n_years)
@@ -215,13 +226,12 @@ if input_mode == "手动输入":
             full_interests[:loan_years] = interest_list
             if np.isscalar(cf_series):
                 cf_series = np.full(n_base, cf_series)
-            cf_series = np.asarray(cf_series) - np.array(full_interests)
+            cf_series = np.asarray(cf_series, dtype=float) - np.array(full_interests, dtype=float)
             st.caption("已从净现金流中扣除各年利息支出。")
 
     # ---------- 大修/替换成本 ----------
     if use_replacement:
         st.subheader("🔧 大修/替换成本时间线")
-        st.caption("定义特定年份的一次性支出（万元），例如储能第10年更换。")
         replace_count = st.number_input("替换事件数量", min_value=0, value=1, step=1)
         replacements = []
         for i in range(replace_count):
@@ -233,6 +243,7 @@ if input_mode == "手动输入":
             replacements.append((year, cost))
         if replacements and np.isscalar(cf_series):
             cf_series = np.full(n_base, cf_series)
+        cf_series = np.asarray(cf_series, dtype=float)
         for yr, cst in replacements:
             cf_series[yr-1] -= cst
 
@@ -252,8 +263,15 @@ if input_mode == "手动输入":
         if not use_advanced_cf:
             if np.isscalar(cf_series):
                 cf_series = np.full(n_base, cf_series)
-            cf_series = np.asarray(cf_series) + carbon_revenue
+            cf_series = np.asarray(cf_series, dtype=float) + carbon_revenue
             st.info("碳收益已自动并入各年净现金流。")
+
+    # 最终确保 cf_series 为 numpy 数组，便于存储
+    if not np.isscalar(cf_series):
+        cf_series = np.asarray(cf_series, dtype=float).ravel()
+    # 若长度小于 n_base 则补齐（防御）
+    if hasattr(cf_series, '__len__') and len(cf_series) < n_base:
+        cf_series = np.pad(cf_series, (0, n_base - len(cf_series)), constant_values=0)
 
     # 保存参数
     st.session_state.params = {
@@ -298,6 +316,7 @@ if input_mode == "手动输入":
     I, r_base, n_base, Q, C_op = p['I'], p['r_base'], p['n_base'], p['Q'], p['C_op']
     cf = p['cf_series']
 
+    # 计算前确保 cf 是安全的
     npv_val = npv(I, cf, r_base, n_base)
     irr_val = irr(I, cf, n_base)
     lcoh_val = lcoh(I, r_base, n_base, C_op, Q) if "LCOH" in targets_to_show else None
@@ -305,7 +324,6 @@ if input_mode == "手动输入":
     if use_lcoe:
         lcoe_val = lcoe(I, r_base, n_base, C_op, Q)
 
-    # 显示指标卡片
     cols = st.columns(len(targets_to_show) + (1 if use_lcoe else 0))
     idx = 0
     for target in targets_to_show:
@@ -319,7 +337,6 @@ if input_mode == "手动输入":
     if use_lcoe:
         cols[idx].metric("LCOE (元/kWh)", f"{lcoe_val:.4f}")
 
-    # 输入数据明细
     with st.expander("📋 查看输入数据明细"):
         data = [
             ["初始投资 I", f"{I} 万元"],
@@ -374,10 +391,10 @@ if use_multi_scenario and input_mode == "手动输入":
                 if len(c_cf_list) == 1:
                     c_cf = c_cf_list[0]
                 else:
-                    c_cf = np.array(c_cf_list[:cn])
+                    c_cf = np.array(c_cf_list[:cn], dtype=float)
             except:
                 st.error("现金流格式错误")
-                c_cf = 300
+                c_cf = 300.0
             case_params.append({'name': f'方案{i+1}', 'I': cI, 'r': cr, 'n': cn, 'cf': c_cf})
     
     if st.button("对比分析"):
@@ -393,7 +410,7 @@ if use_multi_scenario and input_mode == "手动输入":
         st.dataframe(pd.DataFrame(results))
         if len(case_params) >= 2:
             delta_I = case_params[1]['I'] - case_params[0]['I']
-            delta_cf = np.array(case_params[1]['cf']) - np.array(case_params[0]['cf'])
+            delta_cf = np.array(case_params[1]['cf'], dtype=float) - np.array(case_params[0]['cf'], dtype=float)
             delta_n = max(case_params[0]['n'], case_params[1]['n'])
             delta_npv = npv(delta_I, delta_cf, case_params[0]['r'], delta_n)
             st.metric("增量NPV（方案2-方案1）", f"{delta_npv:.2f} 万元")
@@ -413,7 +430,7 @@ if use_breakeven and use_multi_scenario and input_mode == "手动输入":
             p2 = case_params[1].copy()
             if var_index == 0: p1['I'] = x
             elif var_index == 1: p1['r'] = x
-            else: p1['cf'] = np.full(p1['n'], x)
+            else: p1['cf'] = np.full(p1['n'], x, dtype=float)
             return npv(p1['I'], p1['cf'], p1['r'], p1['n']) - npv(p2['I'], p2['cf'], p2['r'], p2['n'])
         try:
             low = 0.1; high = 1000
@@ -461,7 +478,6 @@ if use_matrix and input_mode == "手动输入":
 # ---------- 敏感性分析 ----------
 st.header("📈 敏感性分析")
 
-# ---------- 参数中英文映射 ----------
 param_names_cn = {
     "初始投资 I (万元)": "初始投资 I",
     "年净现金流 (万元)": "年净现金流",
@@ -503,7 +519,7 @@ def get_relevant(target):
         return ["初始投资 I (万元)", "年净现金流 (万元)", "折现率 r", "项目寿命 n (年)"]
     elif target == "LCOH":
         return ["初始投资 I (万元)", "折现率 r", "项目寿命 n (年)", "年运营成本 C_op (万元)", "年制氢量 Q (kg)"]
-    else:  # LCOE
+    else:
         return ["初始投资 I (万元)", "折现率 r", "项目寿命 n (年)", "年运营成本 C_op (万元)", "年发电量 (万kWh)"]
 
 # ---------- 单因素 ----------
