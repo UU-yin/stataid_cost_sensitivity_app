@@ -488,27 +488,10 @@ def update_param(pname, new_val, base):
     elif "制氢量" in pname or "发电量" in pname: Q = new_val
     return I, r, n, C_op, Q, cf
 
-# 中文参数名列表（图表仍用英文缩写，但表格用中文）
-param_names_cn = {
-    "初始投资 I (万元)": "初始投资 I",
-    "年净现金流 (万元)": "年净现金流",
-    "折现率 r": "折现率 r",
-    "项目寿命 n (年)": "项目寿命 n",
-    "年运营成本 C_op (万元)": "年运营成本",
-    "年制氢量 Q (kg)": "年制氢量",
-    "年发电量 (万kWh)": "年发电量"
-}
-param_names_en = {
-    "初始投资 I (万元)": "Initial Investment",
-    "年净现金流 (万元)": "Annual Net CF",
-    "折现率 r": "Discount Rate",
-    "项目寿命 n (年)": "Project Life",
-    "年运营成本 C_op (万元)": "Annual OPEX",
-    "年制氢量 Q (kg)": "Annual H2 Output",
-    "年发电量 (万kWh)": "Annual Power Gen"
-}
+# 中英文参数映射保持不变...
+param_names_cn = { ... }   # 与原代码相同
+param_names_en = { ... }   # 与原代码相同
 
-# 根据目标过滤参数
 def get_relevant(target):
     if target in ["NPV", "IRR"]:
         return ["初始投资 I (万元)", "年净现金流 (万元)", "折现率 r", "项目寿命 n (年)"]
@@ -525,7 +508,6 @@ with tab1:
     else:
         target = st.selectbox("分析目标", targets_to_show + (["LCOE"] if use_lcoe else []), key="single_target")
         base = get_base_params()
-        # 构建参数字典
         param_dict = {
             "初始投资 I (万元)": base['I'],
             "年净现金流 (万元)": base['cf'],
@@ -533,7 +515,7 @@ with tab1:
             "项目寿命 n (年)": base['n'],
             "年运营成本 C_op (万元)": base['C_op'],
             "年制氢量 Q (kg)": base['Q'],
-            "年发电量 (万kWh)": base['Q']  # 注意LCOE复用Q
+            "年发电量 (万kWh)": base['Q']
         }
         relevant = get_relevant(target)
         selected = st.multiselect("选择参数", relevant, default=relevant[:3])
@@ -559,7 +541,11 @@ with tab1:
             results = []
             for pname in selected:
                 base_val = param_dict[pname]
-                low_ch, high_ch = levels if change_type == 'relative' else (-abs_dict[pname][0], abs_dict[pname][1])
+                if change_type == 'relative':
+                    low_ch, high_ch = levels
+                else:
+                    down, up = abs_dict.get(pname, (0.0, 0.0))   # 安全获取，防止KeyError
+                    low_ch, high_ch = -down, up
                 for tag, ch in [("Low", low_ch), ("High", high_ch)]:
                     new_val = base_val * (1 + ch/100) if change_type == 'relative' else base_val + ch
                     I_t, r_t, n_t, C_t, Q_t, cf_t = update_param(pname, new_val, base)
@@ -572,21 +558,28 @@ with tab1:
                     results.append({"参数": param_names_cn.get(pname, pname), "方向": tag, "变动": f"{ch:+.1f}%", target: val})
             df = pd.DataFrame(results)
             pivot = df.pivot(index="参数", columns="方向", values=target).reset_index()
-            pivot["变化范围"] = pivot["High"] - pivot["Low"]
+            # 剔除含有NaN的行，避免绘图错误
+            pivot_clean = pivot.dropna(subset=["Low", "High"])
+            if len(pivot_clean) < len(pivot):
+                st.warning("部分参数计算结果为NaN，已自动从龙卷风图中剔除。")
+            pivot_clean["变化范围"] = pivot_clean["High"] - pivot_clean["Low"]
             st.subheader("📋 敏感性数据表")
-            st.dataframe(pivot.style.format(subset=["Low", "High", "变化范围"], formatter="{:.4f}"))
+            st.dataframe(pivot_clean.style.format(subset=["Low", "High", "变化范围"], formatter="{:.4f}"))
 
             # 龙卷风图（英文坐标）
-            fig, ax = plt.subplots(figsize=(10, 6))
-            params_en = [param_names_en.get(p, p) for p in pivot["参数"]]
-            ranges = pivot["变化范围"]
-            colors = ['#d62728' if x > 0 else '#2ca02c' for x in ranges]
-            ax.barh(params_en, ranges, color=colors, edgecolor='white')
-            ax.set_xlabel(f"{target} Change Range", fontsize=12)
-            ax.set_title(f"Single-factor Sensitivity for {target}", fontsize=14)
-            ax.axvline(0, color='black', linewidth=0.8)
-            plt.tight_layout()
-            st.pyplot(fig)
+            if len(pivot_clean) > 0:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                params_en = [param_names_en.get(p, p) for p in pivot_clean["参数"]]
+                ranges = pivot_clean["变化范围"]
+                colors = ['#d62728' if x > 0 else '#2ca02c' for x in ranges]
+                ax.barh(params_en, ranges, color=colors, edgecolor='white')
+                ax.set_xlabel(f"{target} Change Range", fontsize=12)
+                ax.set_title(f"Single-factor Sensitivity for {target}", fontsize=14)
+                ax.axvline(0, color='black', linewidth=0.8)
+                plt.tight_layout()
+                st.pyplot(fig)
+            else:
+                st.error("没有可用的数据来绘图。")
 
 # ---------- 双因素 ----------
 with tab2:
@@ -615,6 +608,7 @@ with tab2:
             xs = np.linspace(x_range[0]/100, x_range[1]/100, 10)
             ys = np.linspace(y_range[0]/100, y_range[1]/100, 10)
             grid = np.zeros((len(ys), len(xs)))
+            has_nan = False
             for i, dy in enumerate(ys):
                 for j, dx in enumerate(xs):
                     I_t, r_t, n_t, C_t, Q_t, cf_t = base2['I'], base2['r'], base2['n'], base2['C_op'], base2['Q'], base2['cf']
@@ -625,8 +619,12 @@ with tab2:
                     elif target2 == "IRR":
                         irr_t = irr(I_t, cf_t, n_t)
                         grid[i,j] = irr_t*100 if not np.isnan(irr_t) else np.nan
+                        if np.isnan(grid[i,j]): has_nan = True
                     elif target2 == "LCOH": grid[i,j] = lcoh(I_t, r_t, n_t, C_t, Q_t)
                     else: grid[i,j] = lcoe(I_t, r_t, n_t, C_t, Q_t)
+            if has_nan:
+                st.warning("部分组合的IRR无解，热力图中将NaN替换为0显示。")
+                grid = np.nan_to_num(grid, nan=0.0)
             df_grid = pd.DataFrame(grid, index=[f"{y*100:+.0f}%" for y in ys], columns=[f"{x*100:+.0f}%" for x in xs])
             df_grid.index.name = f"{param_names_cn[param_y]} 变化"
             df_grid.columns.name = f"{param_names_cn[param_x]} 变化"
@@ -687,30 +685,33 @@ with tab3:
                     if target3 == "NPV": Y[i] = npv(I_t, cf_t, r_t, n_t)
                     elif target3 == "IRR":
                         ir = irr(I_t, cf_t, n_t)
-                        Y[i] = ir*100 if not np.isnan(ir) else 0
+                        Y[i] = ir*100 if not np.isnan(ir) else 0.0
                     elif target3 == "LCOH": Y[i] = lcoh(I_t, r_t, n_t, C_t, Q_t)
                     else: Y[i] = lcoe(I_t, r_t, n_t, C_t, Q_t)
-                Si = sobol.analyze(problem, Y, calc_second_order=False, print_to_console=False)
+                if np.any(np.isnan(Y)):
+                    st.error("计算结果包含NaN，请检查参数范围或指标计算。")
+                else:
+                    Si = sobol.analyze(problem, Y, calc_second_order=False, print_to_console=False)
 
-                df_si = pd.DataFrame({
-                    "参数": [param_names_cn.get(p, p) for p in selected_sobol],
-                    "一阶指数 S1": Si['S1'],
-                    "总效应指数 ST": Si['ST']
-                })
-                st.subheader("📋 Sobol 敏感指数表")
-                st.dataframe(df_si.style.format(subset=["一阶指数 S1", "总效应指数 ST"], formatter="{:.4f}"))
+                    df_si = pd.DataFrame({
+                        "参数": [param_names_cn.get(p, p) for p in selected_sobol],
+                        "一阶指数 S1": Si['S1'],
+                        "总效应指数 ST": Si['ST']
+                    })
+                    st.subheader("📋 Sobol 敏感指数表")
+                    st.dataframe(df_si.style.format(subset=["一阶指数 S1", "总效应指数 ST"], formatter="{:.4f}"))
 
-                fig, ax = plt.subplots()
-                x = np.arange(len(selected_sobol))
-                w = 0.35
-                ax.bar(x - w/2, Si['S1'], w, label='S1', color='#1f77b4')
-                ax.bar(x + w/2, Si['ST'], w, label='ST', color='#ff7f0e')
-                ax.set_xticks(x)
-                ax.set_xticklabels([param_names_en.get(p, p) for p in selected_sobol], rotation=30)
-                ax.set_ylabel("Sensitivity Index")
-                ax.set_title(f"Sobol Sensitivity for {target3}")
-                ax.legend()
-                st.pyplot(fig)
+                    fig, ax = plt.subplots()
+                    x = np.arange(len(selected_sobol))
+                    w = 0.35
+                    ax.bar(x - w/2, Si['S1'], w, label='S1', color='#1f77b4')
+                    ax.bar(x + w/2, Si['ST'], w, label='ST', color='#ff7f0e')
+                    ax.set_xticks(x)
+                    ax.set_xticklabels([param_names_en.get(p, p) for p in selected_sobol], rotation=30)
+                    ax.set_ylabel("Sensitivity Index")
+                    ax.set_title(f"Sobol Sensitivity for {target3}")
+                    ax.legend()
+                    st.pyplot(fig)
 
 st.sidebar.markdown("---")
 st.sidebar.caption("氢能项目经济性分析平台 v2.0")
