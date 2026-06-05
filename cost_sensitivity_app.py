@@ -8,7 +8,7 @@ import requests
 from copy import deepcopy
 from io import BytesIO
 
-# ---------- 自动配置中文字体 ----------
+# ---------- 自动中文字体 ----------
 @st.cache_resource
 def register_chinese_font():
     target_fonts = ['SimHei', 'Microsoft YaHei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Arial Unicode MS']
@@ -63,7 +63,6 @@ try:
 except ImportError:
     SALIB_AVAILABLE = False
 
-# ---------- 核心公式 ----------
 def crf(r, n):
     return (r * (1 + r)**n) / ((1 + r)**n - 1) if r != 0 else 1/n
 
@@ -91,13 +90,11 @@ def irr(I, cf, n):
     return IRR_FUNC(np.insert(cfs, 0, -I))
 
 def lcoh(I, r, n, C_op, Q):
-    if Q == 0:
-        return np.nan
+    if Q == 0: return np.nan
     return (I * crf(r, n) + C_op) / Q
 
 def lcoe(I, r, n, C_op, Q_gen):
-    if Q_gen == 0:
-        return np.nan
+    if Q_gen == 0: return np.nan
     return (I * crf(r, n) + C_op) / Q_gen
 
 def loan_schedule(principal, annual_rate, years, method='等额本息'):
@@ -117,8 +114,7 @@ def loan_schedule(principal, annual_rate, years, method='等额本息'):
         return [annual_payment] * years, interests
     else:
         annual_principal = principal / years
-        payments = []
-        interests = []
+        payments, interests = [], []
         balance = principal
         for _ in range(years):
             interest = balance * annual_rate
@@ -127,7 +123,6 @@ def loan_schedule(principal, annual_rate, years, method='等额本息'):
             balance -= annual_principal
         return payments, interests
 
-# ---------- 完整项目现金流计算 ----------
 def compute_full_project(params):
     I = params['I']
     r = params['r_base']
@@ -135,8 +130,9 @@ def compute_full_project(params):
     Q = params['Q']
     C_op = params['C_op']
     include_dep = params.get('include_depreciation', False)
+    custom_dep = params.get('custom_depreciation', None)
 
-    # 现金流基础序列
+    # 现金流基础
     if params.get('use_advanced_cf') and params.get('rev_items') is not None:
         rev_items = params['rev_items']
         cost_items = params['cost_items']
@@ -162,12 +158,12 @@ def compute_full_project(params):
             else:
                 cf_series = cf_series[:n]
 
-    # 折旧作为现金流出（可选，默认关闭）
-    if include_dep and I > 0 and n > 0:
-        annual_dep = I / n
+    # 折旧（可选，自定义优先）
+    if include_dep:
+        annual_dep = custom_dep if custom_dep is not None else (I / n if n > 0 else 0)
         cf_series = cf_series - annual_dep
 
-    # 融资利息扣除
+    # 融资利息
     if params.get('use_finance'):
         loan_ratio = params.get('loan_ratio', 0.0)
         loan_rate = params.get('loan_rate', 0.0)
@@ -186,20 +182,15 @@ def compute_full_project(params):
             if 0 < yr <= n:
                 cf_series[yr-1] -= cost
 
-    # 碳收益 (carbon_params 为列表 [ef, cp, gcp, agg])
+    # 碳收益
     if params.get('use_carbon') and params.get('carbon_params'):
         ef, cp, gcp, agg = params['carbon_params']
-        # 碳减排收益
-        carbon_rev_1 = agg * ef / 1000 * cp
-        # 绿证收益 (1个绿证=1000kWh, agg 单位万kWh)
-        carbon_rev_2 = agg * gcp / 1000
-        carbon_rev = carbon_rev_1 + carbon_rev_2
+        carbon_rev = (agg * ef / 1000 * cp) + (agg * gcp / 1000)
         cf_series = cf_series + carbon_rev
 
     cf_series = np.asarray(cf_series, dtype=float).ravel()
     if len(cf_series) < n:
         cf_series = np.pad(cf_series, (0, n - len(cf_series)), constant_values=0)
-
     return I, r, n, Q, C_op, cf_series[:n]
 
 # ---------- 页面设置 ----------
@@ -218,23 +209,27 @@ else:
     selected_targets = st.sidebar.multiselect("选择指标", all_targets, default=all_targets)
 st.session_state['selected_targets'] = selected_targets if selected_targets else all_targets
 
-# 全局单位选择
 unit_choice = st.sidebar.selectbox("💲 金额单位", ["万元", "亿元"], index=0)
 UNIT_SCALE = 10000.0 if unit_choice == "亿元" else 1.0
 unit_label = unit_choice
 
-# 新增折旧开关
-include_depreciation = st.sidebar.checkbox("折旧计入现金流（匹配含折旧成本分析）", value=False,
-                                          help="勾选后，年折旧额（初始投资/寿命期）将作为现金流出，使NPV与包含折旧的总成本对比一致。")
+# 折旧开关 + 自定义输入
+include_depreciation = st.sidebar.checkbox("折旧计入现金流", value=False, help="勾选后，将折旧作为现金流出")
+custom_depreciation = None
+if include_depreciation:
+    # 自动计算默认值
+    # 这里需要 I 和 n，但尚未输入，先占位，在输入参数后更新
+    # 我们将在主输入区动态生成自定义折旧输入框，此处仅记录开关
+    pass
 
 st.sidebar.header("⚙️ 高级功能开关")
-use_advanced_cf = st.sidebar.checkbox("现金流分项构建器（收益/支出明细）", value=False)
+use_advanced_cf = st.sidebar.checkbox("现金流分项构建器", value=False)
 use_carbon = st.sidebar.checkbox("碳排放与碳收益计算", value=False)
-use_finance = st.sidebar.checkbox("融资结构（贷款利息）", value=False)
-use_replacement = st.sidebar.checkbox("大修/替换成本时间线", value=False)
-use_lcoe = st.sidebar.checkbox("计算LCOE（度电成本）", value=False)
+use_finance = st.sidebar.checkbox("融资结构", value=False)
+use_replacement = st.sidebar.checkbox("大修/替换成本", value=False)
+use_lcoe = st.sidebar.checkbox("计算LCOE", value=False)
 use_multi_scenario = st.sidebar.checkbox("多方案对比", value=False)
-use_breakeven = st.sidebar.checkbox("盈亏平衡分析（需启用双方案对比）", value=False)
+use_breakeven = st.sidebar.checkbox("盈亏平衡分析", value=False)
 use_matrix = st.sidebar.checkbox("多场景矩阵分析", value=False)
 
 # ---------- 数据输入 ----------
@@ -247,19 +242,28 @@ if input_mode == "手动输入":
     has_lcoh = "LCOH" in st.session_state.selected_targets
     col1, col2, col3 = st.columns(3)
     with col1:
-        I_raw = st.number_input(f"初始投资 I ({unit_label})", value=1000.0, step=100.0)
+        I_raw = st.number_input(f"初始投资 I ({unit_label})", value=21.0 if unit_choice=="亿元" else 210000.0, step=1.0)
         I = I_raw * UNIT_SCALE
     with col2:
         r_base = st.number_input("基准折现率 r", value=0.08, step=0.01, format="%.3f")
     with col3:
         n_base = st.number_input("项目寿命期 n (年)", value=20, min_value=1, step=1)
 
+    # 折旧自定义输入（放在基本参数下方）
+    custom_depreciation = None
+    if include_depreciation:
+        st.markdown("---")
+        auto_dep = I / n_base if n_base > 0 else 0
+        dep_raw = st.number_input(f"年折旧额 ({unit_label}/年)", value=auto_dep/UNIT_SCALE, step=0.01,
+                                  help=f"自动计算值为 {auto_dep/UNIT_SCALE:.2f}，可手动修改")
+        custom_depreciation = dep_raw * UNIT_SCALE
+
     if has_lcoh or use_lcoe:
         c4, c5 = st.columns(2)
         with c4:
-            Q = st.number_input("年制氢量 Q (kg/年)", value=50000.0, step=1000.0) if has_lcoh else st.number_input("年发电量 (万kWh)", value=5000.0, step=100.0)
+            Q = st.number_input("年制氢量 Q (kg/年)", value=50000.0) if has_lcoh else st.number_input("年发电量 (万kWh)", value=5000.0)
         with c5:
-            C_op_raw = st.number_input(f"年运营成本 ({unit_label}/年)", value=200.0, step=10.0)
+            C_op_raw = st.number_input(f"年运营成本 ({unit_label}/年)", value=200.0)
             C_op = C_op_raw * UNIT_SCALE
     else:
         Q = 1.0
@@ -269,40 +273,43 @@ if input_mode == "手动输入":
     cost_items = None
     if not use_advanced_cf:
         st.subheader("净现金流设置")
-        cf_mode = st.radio("现金流类型", ["等额年金（各年相同）", "逐年输入"], horizontal=True)
-        if cf_mode == "等额年金（各年相同）":
-            cf_val_raw = st.number_input(f"年均净现金流 ({unit_label})", value=300.0, step=10.0)
+        cf_mode = st.radio("现金流类型", ["等额年金", "逐年输入"], horizontal=True)
+        if cf_mode == "等额年金":
+            cf_val_raw = st.number_input(f"年均净现金流 ({unit_label})", value=-17.42 if unit_choice=="亿元" else -174200.0)
             cf_series = cf_val_raw * UNIT_SCALE
         else:
             cf_str = st.text_area(f"各年净现金流，逗号分隔（{unit_label}）", "300,300,300,300,300")
             try:
                 cf_series = [float(x.strip()) * UNIT_SCALE for x in cf_str.split(",") if x.strip() != ""]
             except:
-                st.error("现金流格式错误，将使用默认值300")
+                st.error("格式错误")
                 cf_series = 300.0 * UNIT_SCALE
     else:
         st.subheader("💵 现金流分项构建器")
+        # 收益项
         num_rev = st.number_input("收益项数量", min_value=1, value=2, step=1)
         rev_items = []
         for i in range(num_rev):
             cols = st.columns(3)
             with cols[0]:
-                name = st.text_input(f"收益{i+1}名称", f"电力销售收入" if i==0 else f"碳收益", key=f"rev_name_{i}")
+                name = st.text_input(f"收益{i+1}名称", f"自发绿电节省电费" if i==0 else f"碳资产收益", key=f"rev_name_{i}")
             with cols[1]:
-                amount_raw = st.number_input(f"年金额 ({unit_label})", value=500.0, step=10.0, key=f"rev_amt_{i}")
+                amount_raw = st.number_input(f"年金额 ({unit_label})", value=3.6 if i==0 and unit_choice=="亿元" else 0.0, step=0.1, key=f"rev_amt_{i}")
                 amount = amount_raw * UNIT_SCALE
             with cols[2]:
                 growth = st.number_input(f"年增长率 (%)", value=0.0, step=0.1, key=f"rev_growth_{i}") / 100
             rev_items.append({'name': name, 'amount': amount, 'growth': growth})
-
-        num_cost = st.number_input("支出项数量", min_value=1, value=3, step=1)
+        # 支出项
+        num_cost = st.number_input("支出项数量", min_value=1, value=4, step=1)
         cost_items = []
+        default_cost_names = ["自发绿电运维", "储能系统运维", "外购绿电成本", "常规电力采购"]
+        default_cost_values = [0.42, 0.15, 2.70, 11.12] if unit_choice=="亿元" else [4200, 1500, 27000, 111200]
         for i in range(num_cost):
             cols = st.columns(3)
             with cols[0]:
-                name = st.text_input(f"支出{i+1}名称", f"运维费" if i==0 else (f"外购电费" if i==1 else f"其他"), key=f"cost_name_{i}")
+                name = st.text_input(f"支出{i+1}名称", default_cost_names[i] if i < len(default_cost_names) else f"其他", key=f"cost_name_{i}")
             with cols[1]:
-                amount_raw = st.number_input(f"年金额 ({unit_label})", value=200.0, step=10.0, key=f"cost_amt_{i}")
+                amount_raw = st.number_input(f"年金额 ({unit_label})", value=default_cost_values[i] if i < len(default_cost_values) else 0.0, step=0.1, key=f"cost_amt_{i}")
                 amount = amount_raw * UNIT_SCALE
             with cols[2]:
                 growth = st.number_input(f"年增长率 (%)", value=0.0, step=0.1, key=f"cost_growth_{i}") / 100
@@ -312,55 +319,51 @@ if input_mode == "手动输入":
             total_rev = np.zeros(n_years)
             total_cost = np.zeros(n_years)
             for item in revs:
-                amt = item['amount']
                 for t in range(n_years):
-                    total_rev[t] += amt * (1 + item['growth'])**t
+                    total_rev[t] += item['amount'] * (1 + item['growth'])**t
             for item in costs:
-                amt = item['amount']
                 for t in range(n_years):
-                    total_cost[t] += amt * (1 + item['growth'])**t
+                    total_cost[t] += item['amount'] * (1 + item['growth'])**t
             return total_rev - total_cost
         cf_series = generate_cf_from_items(rev_items, cost_items, n_base)
 
-    # 融资参数
-    loan_ratio = 0.0
-    loan_rate = 0.0
-    loan_years = 0
-    repay_method = '等额本息'
+    # 融资
+    loan_ratio = 0.0; loan_rate = 0.0; loan_years = 0; repay_method = '等额本息'
     if use_finance:
         st.subheader("🏦 融资结构")
-        loan_ratio = st.slider("贷款比例 (%)", 0, 100, 70) / 100
+        loan_ratio = st.slider("贷款比例 (%)", 0, 100, 60) / 100
         loan_rate = st.number_input("贷款年利率 (%)", value=4.2, step=0.1) / 100
-        loan_years = st.number_input("贷款年限", min_value=1, value=min(15, n_base))
+        loan_years = st.number_input("贷款年限", min_value=1, value=15)
         repay_method = st.selectbox("还款方式", ["等额本息", "等额本金"])
 
+    # 替换成本
     replacements = []
     if use_replacement:
-        st.subheader("🔧 大修/替换成本时间线")
+        st.subheader("🔧 大修/替换成本")
         replace_count = st.number_input("替换事件数量", min_value=0, value=1, step=1)
         for i in range(replace_count):
             c1, c2 = st.columns(2)
             with c1:
                 year = st.number_input(f"事件{i+1}年份", min_value=1, max_value=n_base, value=10, key=f"rep_year_{i}")
             with c2:
-                cost_raw = st.number_input(f"事件{i+1}金额 ({unit_label})", value=500.0, step=10.0, key=f"rep_cost_{i}")
-                cost = cost_raw * UNIT_SCALE
-            replacements.append((year, cost))
+                cost_raw = st.number_input(f"金额 ({unit_label})", value=3.0 if unit_choice=="亿元" else 30000.0, key=f"rep_cost_{i}")
+                replacements.append((year, cost_raw * UNIT_SCALE))
 
+    # 碳排放
     carbon_params = None
     if use_carbon:
         st.subheader("🌱 碳排放与碳收益")
         col_c1, col_c2, col_c3 = st.columns(3)
         with col_c1:
-            emission_factor = st.number_input("电网排放因子 (kgCO\u2082/kWh)", value=0.58, step=0.01)
+            emission_factor = st.number_input("电网排放因子 (kg$CO_2$/kWh)", value=0.58, step=0.01)
         with col_c2:
-            carbon_price = st.number_input("碳价 (元/tCO\u2082)", value=50.0, step=5.0)
+            carbon_price = st.number_input("碳价 (元/t$CO_2$)", value=50.0, step=5.0)
         with col_c3:
             green_cert_price = st.number_input("绿证价格 (元/个)", value=7.76, step=0.5)
-        annual_green_gen = st.number_input("年自发绿电量 (万kWh)", value=6000.0, step=100.0)
+        annual_green_gen = st.number_input("年自发绿电量 (万kWh)", value=60000.0, step=100.0)
         carbon_params = [emission_factor, carbon_price, green_cert_price, annual_green_gen]
 
-    # 保存参数（包含折旧开关）
+    # 保存参数
     st.session_state.params = {
         'I': I, 'r_base': r_base, 'n_base': n_base, 'Q': Q, 'C_op': C_op,
         'cf_series': cf_series if not use_advanced_cf else None,
@@ -370,10 +373,13 @@ if input_mode == "手动输入":
         'use_replacement': use_replacement, 'replacements': replacements,
         'use_carbon': use_carbon, 'carbon_params': carbon_params,
         'use_lcoe': use_lcoe, 'unit_scale': UNIT_SCALE,
-        'include_depreciation': include_depreciation
+        'include_depreciation': include_depreciation, 'custom_depreciation': custom_depreciation
     }
 
-# 文件上传部分 (略，保持原有代码) ...
+# 文件上传 (保持原代码) ...
+elif input_mode == "上传文件 (CSV/Excel)":
+    # 省略，与之前版本一致
+    pass
 
 # ---------- 基准计算结果 ----------
 st.header("📊 基准计算结果")
@@ -408,8 +414,8 @@ if input_mode == "手动输入":
             ["项目寿命期 n", f"{n} 年"],
         ]
         if "LCOH" in targets_to_show or use_lcoe:
-            data.append(["年生产量", f"{Q} kg/年" if "LCOH" in targets_to_show else f"{Q} 万kWh/年"])
-            data.append(["年运营成本 C_op", f"{C_op/display_scale:.2f} {unit_label}/年"])
+            data.append(["年生产量", f"{Q}"])
+            data.append(["年运营成本", f"{C_op/display_scale:.2f} {unit_label}/年"])
         if np.isscalar(cf):
             data.append(["各年净现金流", f"年均 {np.mean(cf)/display_scale:.2f} {unit_label}"])
         else:
@@ -453,9 +459,9 @@ def build_all_param_specs(base_params):
                           lambda p, v, idx=i: p['replacements'].__setitem__(idx, (p['replacements'][idx][0], v))))
     if base_params.get('use_carbon') and base_params.get('carbon_params'):
         cp = base_params['carbon_params']
-        specs.append(('emission_factor', '电网排放因子 (kgCO₂/kWh)', cp[0],
+        specs.append(('emission_factor', '电网排放因子 (kg$CO_2$/kWh)', cp[0],
                       lambda p, v: p['carbon_params'].__setitem__(0, v)))
-        specs.append(('carbon_price', '碳价 (元/tCO₂)', cp[1],
+        specs.append(('carbon_price', '碳价 (元/t$CO_2$)', cp[1],
                       lambda p, v: p['carbon_params'].__setitem__(1, v)))
         specs.append(('green_cert_price', '绿证价格 (元/个)', cp[2],
                       lambda p, v: p['carbon_params'].__setitem__(2, v)))
@@ -690,4 +696,4 @@ with tab3:
                     st.pyplot(fig)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("项目经济性分析平台 v3.4")
+st.sidebar.caption("项目经济性分析平台 v3.5")
