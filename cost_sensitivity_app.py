@@ -459,9 +459,9 @@ def build_all_param_specs(base_params):
                           lambda p, v, idx=i: p['replacements'].__setitem__(idx, (p['replacements'][idx][0], v))))
     if base_params.get('use_carbon') and base_params.get('carbon_params'):
         cp = base_params['carbon_params']
-        specs.append(('emission_factor', '电网排放因子 (kg$CO_2$/kWh)', cp[0],
+        specs.append(('emission_factor', '电网排放因子 (kgCO\u2082/kWh)', cp[0],
                       lambda p, v: p['carbon_params'].__setitem__(0, v)))
-        specs.append(('carbon_price', '碳价 (元/t$CO_2$)', cp[1],
+        specs.append(('carbon_price', '碳价 (元/tCO\u2082)', cp[1],
                       lambda p, v: p['carbon_params'].__setitem__(1, v)))
         specs.append(('green_cert_price', '绿证价格 (元/个)', cp[2],
                       lambda p, v: p['carbon_params'].__setitem__(2, v)))
