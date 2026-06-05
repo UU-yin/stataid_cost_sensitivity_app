@@ -2,12 +2,54 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import os
+import requests
 from copy import deepcopy
 from io import BytesIO
 
-# ---------- matplotlib 中文支持 ----------
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS', 'DejaVu Sans', 'sans-serif']
-plt.rcParams['axes.unicode_minus'] = False
+# ---------- 自动配置中文字体 ----------
+@st.cache_resource
+def register_chinese_font():
+    """自动查找/下载中文字体，确保图表中文正常显示"""
+    # 常见中文字体名称
+    target_fonts = ['SimHei', 'Microsoft YaHei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'Arial Unicode MS']
+    # 检查已有字体
+    available_fonts = [f.name for f in fm.fontManager.ttflist]
+    for font in target_fonts:
+        if font in available_fonts:
+            plt.rcParams['font.sans-serif'] = [font] + plt.rcParams['font.sans-serif']
+            plt.rcParams['axes.unicode_minus'] = False
+            return
+
+    # 如果没有，则尝试下载 SimHei 字体
+    font_path = "/tmp/SimHei.ttf"
+    if not os.path.exists(font_path):
+        try:
+            # 使用可靠的 GitHub 字体源
+            url = "https://github.com/StellarCN/scp_zh/raw/master/fonts/SimHei.ttf"
+            r = requests.get(url, timeout=15)
+            if r.status_code == 200:
+                with open(font_path, 'wb') as f:
+                    f.write(r.content)
+        except:
+            pass
+
+    if os.path.exists(font_path):
+        try:
+            fm.fontManager.addfont(font_path)
+            plt.rcParams['font.sans-serif'] = ['SimHei'] + plt.rcParams['font.sans-serif']
+            plt.rcParams['axes.unicode_minus'] = False
+            # 重建字体缓存
+            fm._load_fontmanager(try_read_cache=False)
+            return
+        except:
+            pass
+
+    # 最终回退
+    st.warning("未找到中文字体，图表中的中文可能显示为方框。请确保系统安装了中文字体。")
+
+register_chinese_font()
 
 # ---------- 财务函数 ----------
 try:
@@ -102,7 +144,6 @@ def compute_full_project(params):
     n = params['n_base']
     Q = params['Q']
     C_op = params['C_op']
-    unit_scale = params.get('unit_scale', 1.0)
 
     # 现金流基础序列
     if params.get('use_advanced_cf') and params.get('rev_items') is not None:
@@ -149,10 +190,15 @@ def compute_full_project(params):
             if 0 < yr <= n:
                 cf_series[yr-1] -= cost
 
-    # 碳收益 (carbon_params 现在为列表 [ef, cp, gcp, agg])
+    # 碳收益 (carbon_params 为列表 [ef, cp, gcp, agg])
     if params.get('use_carbon') and params.get('carbon_params'):
         ef, cp, gcp, agg = params['carbon_params']
-        carbon_rev = agg * ef / 1000 * cp + agg * gcp / 10000
+        # 碳减排收益：万吨CO₂ × 碳价（元/吨） → 万元
+        carbon_rev_1 = agg * ef / 1000 * cp
+        # 绿证收益：1个绿证=1000kWh，绿证数量 = (agg*10000)/1000 = agg*10 个
+        # 万元收益 = agg*10*gcp / 10000 = agg*gcp/1000
+        carbon_rev_2 = agg * gcp / 1000
+        carbon_rev = carbon_rev_1 + carbon_rev_2
         cf_series = cf_series + carbon_rev
 
     cf_series = np.asarray(cf_series, dtype=float).ravel()
@@ -177,11 +223,10 @@ else:
     selected_targets = st.sidebar.multiselect("选择指标", all_targets, default=all_targets)
 st.session_state['selected_targets'] = selected_targets if selected_targets else all_targets
 
-# ========== 新增：全局单位选择 ==========
+# 全局单位选择
 unit_choice = st.sidebar.selectbox("💲 金额单位", ["万元", "亿元"], index=0)
 UNIT_SCALE = 10000.0 if unit_choice == "亿元" else 1.0
-unit_label = "亿元" if unit_choice == "亿元" else "万元"
-# =====================================
+unit_label = unit_choice
 
 st.sidebar.header("⚙️ 高级功能开关")
 use_advanced_cf = st.sidebar.checkbox("现金流分项构建器（收益/支出明细）", value=False)
@@ -193,10 +238,9 @@ use_multi_scenario = st.sidebar.checkbox("多方案对比", value=False)
 use_breakeven = st.sidebar.checkbox("盈亏平衡分析（需启用双方案对比）", value=False)
 use_matrix = st.sidebar.checkbox("多场景矩阵分析", value=False)
 
-# ---------- 主界面：数据输入 ----------
+# ---------- 数据输入 ----------
 st.header("📥 数据输入")
 input_mode = st.radio("输入方式", ["手动输入", "上传文件 (CSV/Excel)"], horizontal=True)
-
 if 'params' not in st.session_state:
     st.session_state.params = {}
 
@@ -222,7 +266,6 @@ if input_mode == "手动输入":
         Q = 1.0
         C_op = 0.0
 
-    # 现金流构建
     rev_items = None
     cost_items = None
     if not use_advanced_cf:
@@ -240,8 +283,6 @@ if input_mode == "手动输入":
                 cf_series = 300.0 * UNIT_SCALE
     else:
         st.subheader("💵 现金流分项构建器")
-        st.caption("输入各项收益与支出，自动计算每年净现金流")
-        st.markdown("**收益项**")
         num_rev = st.number_input("收益项数量", min_value=1, value=2, step=1)
         rev_items = []
         for i in range(num_rev):
@@ -255,7 +296,6 @@ if input_mode == "手动输入":
                 growth = st.number_input(f"年增长率 (%)", value=0.0, step=0.1, key=f"rev_growth_{i}") / 100
             rev_items.append({'name': name, 'amount': amount, 'growth': growth})
 
-        st.markdown("**支出项**")
         num_cost = st.number_input("支出项数量", min_value=1, value=3, step=1)
         cost_items = []
         for i in range(num_cost):
@@ -295,7 +335,6 @@ if input_mode == "手动输入":
         loan_years = st.number_input("贷款年限", min_value=1, value=min(15, n_base))
         repay_method = st.selectbox("还款方式", ["等额本息", "等额本金"])
 
-    # 替换成本
     replacements = []
     if use_replacement:
         st.subheader("🔧 大修/替换成本时间线")
@@ -309,7 +348,6 @@ if input_mode == "手动输入":
                 cost = cost_raw * UNIT_SCALE
             replacements.append((year, cost))
 
-    # 碳排放参数 (改为列表，方便后续修改)
     carbon_params = None
     if use_carbon:
         st.subheader("🌱 碳排放与碳收益")
@@ -323,34 +361,20 @@ if input_mode == "手动输入":
         annual_green_gen = st.number_input("年自发绿电量 (万kWh)", value=6000.0, step=100.0)
         carbon_params = [emission_factor, carbon_price, green_cert_price, annual_green_gen]
 
-    # 保存完整参数
     st.session_state.params = {
-        'I': I,
-        'r_base': r_base,
-        'n_base': n_base,
-        'Q': Q,
-        'C_op': C_op,
+        'I': I, 'r_base': r_base, 'n_base': n_base, 'Q': Q, 'C_op': C_op,
         'cf_series': cf_series if not use_advanced_cf else None,
-        'use_advanced_cf': use_advanced_cf,
-        'rev_items': rev_items,
-        'cost_items': cost_items,
-        'use_finance': use_finance,
-        'loan_ratio': loan_ratio,
-        'loan_rate': loan_rate,
-        'loan_years': loan_years,
-        'repay_method': repay_method,
-        'use_replacement': use_replacement,
-        'replacements': replacements,
-        'use_carbon': use_carbon,
-        'carbon_params': carbon_params,
-        'use_lcoe': use_lcoe,
-        'unit_scale': UNIT_SCALE,    # 记录单位缩放
+        'use_advanced_cf': use_advanced_cf, 'rev_items': rev_items, 'cost_items': cost_items,
+        'use_finance': use_finance, 'loan_ratio': loan_ratio, 'loan_rate': loan_rate,
+        'loan_years': loan_years, 'repay_method': repay_method,
+        'use_replacement': use_replacement, 'replacements': replacements,
+        'use_carbon': use_carbon, 'carbon_params': carbon_params,
+        'use_lcoe': use_lcoe, 'unit_scale': UNIT_SCALE
     }
 
-# ---------- 文件上传 ----------
+# ---------- 文件上传（省略，保持原有）----------
 elif input_mode == "上传文件 (CSV/Excel)":
     uploaded_file = st.file_uploader("上传文件", type=['csv', 'xlsx'])
-    st.markdown("文件需包含列: `I`, `r`, `n`, `Q`, `C_op`, `cf_type`, `cf_values`")
     st.download_button("📥 下载标准模板", data="I,r,n,Q,C_op,cf_type,cf_values\n1000,0.08,20,50000,200,uniform,300",
                        file_name="template.csv")
     if uploaded_file:
@@ -377,17 +401,17 @@ targets_to_show = st.session_state.get('selected_targets', ["NPV", "IRR", "LCOH"
 if input_mode == "手动输入":
     base_params = deepcopy(st.session_state.params)
     I, r, n, Q, C_op, cf = compute_full_project(base_params)
-
     npv_val = npv(I, cf, r, n)
     irr_val = irr(I, cf, n)
     lcoh_val = lcoh(I, r, n, C_op, Q) if "LCOH" in targets_to_show else None
     lcoe_val = lcoe(I, r, n, C_op, Q) if use_lcoe else None
 
+    display_scale = UNIT_SCALE
     cols = st.columns(len(targets_to_show) + (1 if use_lcoe else 0))
     idx = 0
     for target in targets_to_show:
         if target == "NPV":
-            cols[idx].metric("NPV (万元)", f"{npv_val:.2f}")
+            cols[idx].metric(f"NPV ({unit_label})", f"{npv_val/display_scale:.2f}")
         elif target == "IRR":
             cols[idx].metric("IRR (%)", f"{irr_val*100:.2f}" if not np.isnan(irr_val) else "无解")
         elif target == "LCOH":
@@ -398,82 +422,56 @@ if input_mode == "手动输入":
 
     with st.expander("📋 查看输入数据明细"):
         data = [
-            ["初始投资 I", f"{I} 万元"],
+            ["初始投资 I", f"{I/display_scale:.2f} {unit_label}"],
             ["基准折现率 r", f"{r*100:.2f}%"],
             ["项目寿命期 n", f"{n} 年"],
         ]
         if "LCOH" in targets_to_show or use_lcoe:
             data.append(["年生产量", f"{Q} kg/年" if "LCOH" in targets_to_show else f"{Q} 万kWh/年"])
-            data.append(["年运营成本 C_op", f"{C_op} 万元/年"])
+            data.append(["年运营成本 C_op", f"{C_op/display_scale:.2f} {unit_label}/年"])
         if np.isscalar(cf):
-            data.append(["各年净现金流", f"年均 {cf} 万元"])
+            data.append(["各年净现金流", f"年均 {np.mean(cf)/display_scale:.2f} {unit_label}"])
         else:
-            data.append(["各年净现金流", f"逐年数据"])
+            data.append(["各年净现金流", "逐年数据"])
         st.table(pd.DataFrame(data, columns=["项目", "数值"]))
-
-elif input_mode == "上传文件 (CSV/Excel)":
-    if st.session_state.get('uploaded_df') is not None:
-        df = st.session_state.uploaded_df
-        st.subheader("上传数据预览")
-        st.dataframe(df)
-        all_results = []
-        for _, row in df.iterrows():
-            cf_raw = str(row['cf_values'])
-            cf_series = float(cf_raw) if row['cf_type'] == 'uniform' else [float(x.strip()) for x in cf_raw.split(',')]
-            res = {"项目": _+1}
-            if "NPV" in targets_to_show: res["NPV (万元)"] = npv(row['I'], cf_series, row['r'], int(row['n']))
-            if "IRR" in targets_to_show:
-                ir = irr(row['I'], cf_series, int(row['n']))
-                res["IRR (%)"] = ir*100 if not np.isnan(ir) else np.nan
-            if "LCOH" in targets_to_show: res["LCOH (元/kg)"] = lcoh(row['I'], row['r'], int(row['n']), row['C_op'], row['Q'])
-            all_results.append(res)
-        st.subheader("批量计算结果")
-        st.dataframe(pd.DataFrame(all_results))
-    else:
-        st.info("请上传文件")
 
 # ---------- 敏感性分析 ----------
 st.header("📈 敏感性分析")
 
 def build_all_param_specs(base_params):
     specs = []
-    # 固定基本参数
-    specs.append(('I', '初始投资 I (万元)', base_params['I'], lambda p, v: p.update({'I': v})))
+    specs.append(('I', f'初始投资 I ({unit_label})', base_params['I'], lambda p, v: p.update({'I': v})))
     specs.append(('r_base', '折现率 r', base_params['r_base'], lambda p, v: p.update({'r_base': v})))
     specs.append(('n_base', '项目寿命 n (年)', base_params['n_base'], lambda p, v: p.update({'n_base': int(max(1, round(v)))})))
-    specs.append(('C_op', '年运营成本 C_op (万元)', base_params['C_op'], lambda p, v: p.update({'C_op': v})))
+    specs.append(('C_op', f'年运营成本 C_op ({unit_label})', base_params['C_op'], lambda p, v: p.update({'C_op': v})))
     if base_params.get('use_lcoe'):
         specs.append(('Q', '年发电量 (万kWh)', base_params['Q'], lambda p, v: p.update({'Q': v})))
     else:
         specs.append(('Q', '年制氢量 Q (kg)', base_params['Q'], lambda p, v: p.update({'Q': v})))
-    # 高级现金流分项
     if base_params.get('use_advanced_cf') and base_params.get('rev_items'):
         for i, item in enumerate(base_params['rev_items']):
             name = item['name']
-            specs.append((f'rev_{i}_amount', f'收益-{name} 金额 (万元)', item['amount'],
+            specs.append((f'rev_{i}_amount', f'收益-{name} 金额 ({unit_label})', item['amount'],
                           lambda p, v, idx=i: p['rev_items'][idx].update({'amount': v})))
             specs.append((f'rev_{i}_growth', f'收益-{name} 增长率', item['growth'],
                           lambda p, v, idx=i: p['rev_items'][idx].update({'growth': v})))
     if base_params.get('use_advanced_cf') and base_params.get('cost_items'):
         for i, item in enumerate(base_params['cost_items']):
             name = item['name']
-            specs.append((f'cost_{i}_amount', f'支出-{name} 金额 (万元)', item['amount'],
+            specs.append((f'cost_{i}_amount', f'支出-{name} 金额 ({unit_label})', item['amount'],
                           lambda p, v, idx=i: p['cost_items'][idx].update({'amount': v})))
             specs.append((f'cost_{i}_growth', f'支出-{name} 增长率', item['growth'],
                           lambda p, v, idx=i: p['cost_items'][idx].update({'growth': v})))
-    # 融资参数
     if base_params.get('use_finance'):
         specs.append(('loan_ratio', '贷款比例', base_params['loan_ratio'], lambda p, v: p.update({'loan_ratio': v})))
         specs.append(('loan_rate', '贷款年利率', base_params['loan_rate'], lambda p, v: p.update({'loan_rate': v})))
         specs.append(('loan_years', '贷款年限', base_params['loan_years'], lambda p, v: p.update({'loan_years': int(max(1, round(v)))})))
-    # 替换成本
     if base_params.get('use_replacement') and base_params.get('replacements'):
         for i, (yr, cost) in enumerate(base_params['replacements']):
-            specs.append((f'replace_{i}_cost', f'替换事件{i+1}金额 (万元)', cost,
+            specs.append((f'replace_{i}_cost', f'替换事件{i+1}金额 ({unit_label})', cost,
                           lambda p, v, idx=i: p['replacements'].__setitem__(idx, (p['replacements'][idx][0], v))))
-    # 碳排放参数 (列表，直接索引赋值)
     if base_params.get('use_carbon') and base_params.get('carbon_params'):
-        cp = base_params['carbon_params']  # [ef, cp, gcp, agg]
+        cp = base_params['carbon_params']
         specs.append(('emission_factor', '电网排放因子 (kgCO₂/kWh)', cp[0],
                       lambda p, v: p['carbon_params'].__setitem__(0, v)))
         specs.append(('carbon_price', '碳价 (元/tCO₂)', cp[1],
@@ -487,10 +485,10 @@ def build_all_param_specs(base_params):
 if input_mode == "手动输入":
     base_params_original = deepcopy(st.session_state.params)
     all_specs = build_all_param_specs(base_params_original)
-    all_display_names = [spec[1] for spec in all_specs]
-    display_to_key = {spec[1]: spec[0] for spec in all_specs}
-    key_to_base = {spec[0]: spec[2] for spec in all_specs}
-    key_to_updater = {spec[0]: spec[3] for spec in all_specs}
+    all_display_names = [s[1] for s in all_specs]
+    display_to_key = {s[1]: s[0] for s in all_specs}
+    key_to_base = {s[0]: s[2] for s in all_specs}
+    key_to_updater = {s[0]: s[3] for s in all_specs}
 else:
     all_display_names = []
     display_to_key = {}
@@ -559,14 +557,15 @@ with tab1:
                 pivot_clean = pivot.dropna(subset=["Low", "High"])
                 if not pivot_clean.empty:
                     pivot_clean["变化范围"] = pivot_clean["High"] - pivot_clean["Low"]
-                    st.subheader("📋 敏感性数据表")
+                    unit_str = f" ({unit_label})" if target == "NPV" else ""
+                    st.subheader(f"📋 敏感性数据表 (单位: {target}{unit_str})")
                     st.dataframe(pivot_clean.style.format(subset=["Low", "High", "变化范围"], formatter="{:.4f}"))
                     fig, ax = plt.subplots(figsize=(10, 6))
                     ranges = pivot_clean["变化范围"]
                     colors = ['#d62728' if x > 0 else '#2ca02c' for x in ranges]
                     ax.barh(pivot_clean["参数"], ranges, color=colors)
-                    ax.set_xlabel(f"{target} Change Range")
-                    ax.set_title(f"Single-factor Sensitivity for {target}")
+                    ax.set_xlabel(f"{target} 变化范围{unit_str}", fontsize=12)
+                    ax.set_title(f"单因素敏感性分析: {target}", fontsize=14)
                     ax.axvline(0, color='black', linewidth=0.8)
                     plt.tight_layout()
                     st.pyplot(fig)
@@ -588,7 +587,7 @@ with tab2:
             x_range = st.slider("X变动范围 (%)", -50, 50, (-20, 20), 5)
         with col_b:
             param_y_display = st.selectbox("Y轴参数", all_display_names,
-                                           index=min(1, len(all_display_names)-1) if len(all_display_names) > 1 else 0,
+                                           index=min(1, len(all_display_names)-1) if len(all_display_names)>1 else 0,
                                            key="dual_param_y")
             y_range = st.slider("Y变动范围 (%)", -50, 50, (-20, 20), 5)
 
@@ -620,18 +619,20 @@ with tab2:
                     elif target2 == "LCOH": grid[i,j] = lcoh(I_t, r_t, n_t, C_t, Q_t)
                     else: grid[i,j] = lcoe(I_t, r_t, n_t, C_t, Q_t)
             if has_nan:
-                st.warning("部分组合的IRR无解，热力图中将NaN替换为0显示。")
+                st.warning("部分IRR无解，已替换为0")
                 grid = np.nan_to_num(grid, nan=0.0)
+
             df_grid = pd.DataFrame(grid, index=[f"{y*100:+.0f}%" for y in ys], columns=[f"{x*100:+.0f}%" for x in xs])
             df_grid.index.name = f"{param_y_display} 变化"
             df_grid.columns.name = f"{param_x_display} 变化"
             st.subheader("📋 网格数据表")
             st.dataframe(df_grid.style.format("{:.4f}"))
+
             fig, ax = plt.subplots()
             c = ax.contourf(xs*100, ys*100, grid, cmap='RdYlGn')
-            ax.set_xlabel(f"{param_x_display} change (%)")
-            ax.set_ylabel(f"{param_y_display} change (%)")
-            ax.set_title(f"Two-factor Sensitivity for {target2}")
+            ax.set_xlabel(f"{param_x_display} 变化 (%)", fontsize=12)
+            ax.set_ylabel(f"{param_y_display} 变化 (%)", fontsize=12)
+            ax.set_title(f"双因素敏感性分析: {target2}", fontsize=14)
             fig.colorbar(c, ax=ax)
             st.pyplot(fig)
 
@@ -647,7 +648,7 @@ with tab3:
         selected_sobol_display = st.multiselect("选择参数", all_display_names,
                                                 default=all_display_names[:min(3, len(all_display_names))],
                                                 key="sobol_multiselect")
-        sample_N = st.number_input("基础样本数 N", value=256, min_value=64, step=64, help="总运行次数 = N*(2D+2)")
+        sample_N = st.number_input("基础样本数 N", value=256, min_value=64, step=64)
         if st.button("运行 Sobol 分析", key="run_sobol"):
             if len(selected_sobol_display) < 2:
                 st.warning("至少选择两个参数")
@@ -660,7 +661,7 @@ with tab3:
                     high = base_v * 1.3
                     if key == 'r_base':
                         low, high = max(0.01, low), min(0.5, high)
-                    elif key == 'n_base' or key == 'loan_years':
+                    elif key in ['n_base', 'loan_years']:
                         low, high = max(1, int(low)), max(2, int(high))
                     elif key == 'loan_ratio':
                         low, high = max(0.0, low), min(1.0, high)
@@ -673,8 +674,7 @@ with tab3:
                     p = deepcopy(base_params_original)
                     for j, key in enumerate(selected_keys):
                         val = row[j]
-                        updater = key_to_updater[key]
-                        updater(p, val)
+                        key_to_updater[key](p, val)
                     I_t, r_t, n_t, Q_t, C_t, cf_t = compute_full_project(p)
                     if target3 == "NPV": Y[i] = npv(I_t, cf_t, r_t, n_t)
                     elif target3 == "IRR":
@@ -682,8 +682,9 @@ with tab3:
                         Y[i] = ir*100 if not np.isnan(ir) else 0.0
                     elif target3 == "LCOH": Y[i] = lcoh(I_t, r_t, n_t, C_t, Q_t)
                     else: Y[i] = lcoe(I_t, r_t, n_t, C_t, Q_t)
+
                 if np.any(np.isnan(Y)):
-                    st.error("计算结果包含NaN，请检查参数范围或指标计算。")
+                    st.error("计算结果包含NaN，请检查参数范围")
                 else:
                     Si = sobol.analyze(problem, Y, calc_second_order=False, print_to_console=False)
                     df_si = pd.DataFrame({
@@ -693,6 +694,7 @@ with tab3:
                     })
                     st.subheader("📋 Sobol 敏感指数表")
                     st.dataframe(df_si.style.format(subset=["一阶指数 S1", "总效应指数 ST"], formatter="{:.4f}"))
+
                     fig, ax = plt.subplots()
                     x = np.arange(len(selected_sobol_display))
                     w = 0.35
@@ -700,10 +702,11 @@ with tab3:
                     ax.bar(x + w/2, Si['ST'], w, label='ST', color='#ff7f0e')
                     ax.set_xticks(x)
                     ax.set_xticklabels(selected_sobol_display, rotation=30)
-                    ax.set_ylabel("Sensitivity Index")
-                    ax.set_title(f"Sobol Sensitivity for {target3}")
+                    ax.set_ylabel("敏感度指数")
+                    ax.set_title(f"Sobol 全局敏感性: {target3}")
                     ax.legend()
+                    plt.tight_layout()
                     st.pyplot(fig)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("项目经济性分析平台 v3.1")
+st.sidebar.caption("氢能项目经济性分析平台 v3.3")
