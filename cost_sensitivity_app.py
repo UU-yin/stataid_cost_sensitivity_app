@@ -321,39 +321,41 @@ st.title("项目成本计算与敏感性分析平台")
 
 # ---------- 侧边栏 ----------
 st.sidebar.header("📌 分析方法选择")
-analysis_scope = st.sidebar.selectbox("选择指标数量", ["单个方法", "两种方法", "三种方法"], index=1)
+analysis_scope = st.sidebar.selectbox("选择指标数量", ["单个方法", "两种方法", "三种方法"], index=1, key="analysis_scope")
 all_targets = ["NPV", "IRR", "LCOH"]
 if analysis_scope == "单个方法":
-    selected_targets = [st.sidebar.selectbox("选择指标", all_targets, index=0)]
+    selected_targets = [st.sidebar.selectbox("选择指标", all_targets, index=0, key="single_target_select")]
 elif analysis_scope == "两种方法":
-    selected_targets = st.sidebar.multiselect("选择两个指标", all_targets, default=["NPV", "IRR"], max_selections=2)
+    selected_targets = st.sidebar.multiselect("选择两个指标", all_targets, default=["NPV", "IRR"], max_selections=2, key="two_targets")
 else:
-    selected_targets = st.sidebar.multiselect("选择指标", all_targets, default=all_targets)
+    selected_targets = st.sidebar.multiselect("选择指标", all_targets, default=all_targets, key="three_targets")
 st.session_state['selected_targets'] = selected_targets if selected_targets else all_targets
 
-unit_choice = st.sidebar.selectbox("💲 金额单位", ["万元", "亿元"], index=0)
+unit_choice = st.sidebar.selectbox("💲 金额单位", ["万元", "亿元"], index=0, key="unit_choice")
 UNIT_SCALE = 10000.0 if unit_choice == "亿元" else 1.0
 unit_label = unit_choice
 
-include_depreciation = st.sidebar.checkbox("折旧计入现金流", value=False)
+include_depreciation = st.sidebar.checkbox("折旧计入现金流", value=False, key="depreciation_checkbox")
+custom_depreciation = None
+
 st.sidebar.header("⚙️ 高级功能开关")
-use_advanced_cf = st.sidebar.checkbox("现金流分项构建器", value=False)
-use_carbon = st.sidebar.checkbox("碳排放与碳收益计算", value=False)
-use_finance = st.sidebar.checkbox("融资结构", value=False)
-use_replacement = st.sidebar.checkbox("大修/替换成本", value=False)
-use_lcoe = st.sidebar.checkbox("计算LCOE", value=False)
-use_multi_scenario = st.sidebar.checkbox("多方案对比", value=False)
-use_breakeven = st.sidebar.checkbox("盈亏平衡分析", value=False)
-use_matrix = st.sidebar.checkbox("多场景矩阵分析", value=False)
+use_advanced_cf = st.sidebar.checkbox("现金流分项构建器", value=False, key="adv_cf_checkbox")
+use_carbon = st.sidebar.checkbox("碳排放与碳收益计算", value=False, key="carbon_checkbox")
+use_finance = st.sidebar.checkbox("融资结构", value=False, key="finance_checkbox")
+use_replacement = st.sidebar.checkbox("大修/替换成本", value=False, key="replacement_checkbox")
+use_lcoe = st.sidebar.checkbox("计算LCOE", value=False, key="lcoe_checkbox")
+use_multi_scenario = st.sidebar.checkbox("多方案对比", value=False, key="multi_scenario_checkbox")
+use_breakeven = st.sidebar.checkbox("盈亏平衡分析", value=False, key="breakeven_checkbox")
+use_matrix = st.sidebar.checkbox("多场景矩阵分析", value=False, key="matrix_checkbox")
 
 # 逆向分析开关
 st.sidebar.header("🎯 逆向分析工具")
-use_irr_backsolve = st.sidebar.checkbox("单参数逆向求解", value=False)
-use_irr_contour = st.sidebar.checkbox("双参数盈亏边界图", value=False)
+use_irr_backsolve = st.sidebar.checkbox("单参数逆向求解", value=False, key="irr_backsolve_checkbox")
+use_irr_contour = st.sidebar.checkbox("双参数盈亏边界图", value=False, key="irr_contour_checkbox")
 
 # ---------- 数据输入 ----------
 st.header("📥 数据输入")
-input_mode = st.radio("输入方式", ["手动输入", "上传文件 (CSV/Excel)"], horizontal=True)
+input_mode = st.radio("输入方式", ["手动输入", "上传文件 (CSV/Excel)"], horizontal=True, key="input_mode")
 if 'params' not in st.session_state:
     st.session_state.params = {}
 
@@ -361,25 +363,24 @@ if input_mode == "手动输入":
     has_lcoh = "LCOH" in st.session_state.selected_targets
     col1, col2, col3 = st.columns(3)
     with col1:
-        I_raw = st.number_input(f"初始投资 I ({unit_label})", value=21.0 if unit_choice=="亿元" else 210000.0)
+        I_raw = st.number_input(f"初始投资 I ({unit_label})", value=21.0 if unit_choice=="亿元" else 210000.0, key="init_investment")
         I = I_raw * UNIT_SCALE
     with col2:
-        r_base = st.number_input("基准折现率 r", value=0.08, step=0.01, format="%.3f")
+        r_base = st.number_input("基准折现率 r", value=0.08, step=0.01, format="%.3f", key="discount_rate")
     with col3:
-        n_base = st.number_input("项目寿命期 n (年)", value=20, min_value=1)
-    custom_depreciation = None
+        n_base = st.number_input("项目寿命期 n (年)", value=20, min_value=1, key="project_life")
     if include_depreciation:
         st.markdown("---")
         auto_dep = I / n_base if n_base > 0 else 0
-        dep_raw = st.number_input(f"年折旧额 ({unit_label}/年)", value=auto_dep/UNIT_SCALE)
+        dep_raw = st.number_input(f"年折旧额 ({unit_label}/年)", value=auto_dep/UNIT_SCALE, key="depreciation_amount")
         custom_depreciation = dep_raw * UNIT_SCALE
 
     if has_lcoh or use_lcoe:
         c4, c5 = st.columns(2)
         with c4:
-            Q = st.number_input("年制氢量 Q (kg/年)", value=50000.0) if has_lcoh else st.number_input("年发电量 (万kWh)", value=5000.0)
+            Q = st.number_input("年制氢量 Q (kg/年)", value=50000.0, key="Q_h2") if has_lcoh else st.number_input("年发电量 (万kWh)", value=5000.0, key="Q_gen")
         with c5:
-            C_op_raw = st.number_input(f"年运营成本 ({unit_label}/年)", value=200.0)
+            C_op_raw = st.number_input(f"年运营成本 ({unit_label}/年)", value=200.0, key="annual_opex")
             C_op = C_op_raw * UNIT_SCALE
     else:
         Q = 1.0; C_op = 0.0
@@ -387,12 +388,12 @@ if input_mode == "手动输入":
     rev_items = None; cost_items = None
     if not use_advanced_cf:
         st.subheader("净现金流设置")
-        cf_mode = st.radio("现金流类型", ["等额年金", "逐年输入"], horizontal=True)
+        cf_mode = st.radio("现金流类型", ["等额年金", "逐年输入"], horizontal=True, key="cf_mode")
         if cf_mode == "等额年金":
-            cf_val_raw = st.number_input(f"年均净现金流 ({unit_label})", value=-17.42 if unit_choice=="亿元" else -174200.0)
+            cf_val_raw = st.number_input(f"年均净现金流 ({unit_label})", value=-17.42 if unit_choice=="亿元" else -174200.0, key="annuity_cf")
             cf_series = cf_val_raw * UNIT_SCALE
         else:
-            cf_str = st.text_area(f"各年净现金流，逗号分隔（{unit_label}）", "300,300,300,300,300")
+            cf_str = st.text_area(f"各年净现金流，逗号分隔（{unit_label}）", "300,300,300,300,300", key="yearly_cf")
             try:
                 cf_series = [float(x.strip()) * UNIT_SCALE for x in cf_str.split(",") if x.strip() != ""]
             except:
@@ -400,7 +401,7 @@ if input_mode == "手动输入":
                 cf_series = 300.0 * UNIT_SCALE
     else:
         st.subheader("💵 现金流分项构建器")
-        num_rev = st.number_input("收益项数量", min_value=1, value=5, step=1)
+        num_rev = st.number_input("收益项数量", min_value=1, value=5, step=1, key="num_rev")
         rev_items = []
         default_rev_names = ["自发绿电节约电费","外购绿电差额","电热联动节约天然气","电制氢替代外购氢气","碳配额/CCER收益"]
         default_rev_vals = [3.42, -0.18, 1.20, 0.70, 0.52] if unit_choice=="亿元" else [34200,-1800,12000,7000,5200]
@@ -415,7 +416,7 @@ if input_mode == "手动输入":
                 growth = st.number_input(f"年增长率 (%)", value=0.0, step=0.1, key=f"rev_growth_{i}") / 100
             rev_items.append({'name': name, 'amount': amount, 'growth': growth})
 
-        num_cost = st.number_input("支出项数量", min_value=1, value=6, step=1)
+        num_cost = st.number_input("支出项数量", min_value=1, value=6, step=1, key="num_cost")
         cost_items = []
         default_cost_names = ["自发绿电运维","储能系统运维","电解槽及储氢运维","电热联动谷电电费","电制氢购电","管理费用"]
         default_cost_vals = [0.42,0.15,0.20,0.45,0.35,0.20] if unit_choice=="亿元" else [4200,1500,2000,4500,3500,2000]
@@ -445,15 +446,15 @@ if input_mode == "手动输入":
     loan_ratio = 0.0; loan_rate = 0.0; loan_years = 0; repay_method = '等额本息'
     if use_finance:
         st.subheader("🏦 融资结构")
-        loan_ratio = st.slider("贷款比例 (%)", 0, 100, 47) / 100
-        loan_rate = st.number_input("贷款年利率 (%)", value=4.2, step=0.1) / 100
-        loan_years = st.number_input("贷款年限", min_value=1, value=15)
-        repay_method = st.selectbox("还款方式", ["等额本息", "等额本金"])
+        loan_ratio = st.slider("贷款比例 (%)", 0, 100, 47, key="loan_ratio_slider") / 100
+        loan_rate = st.number_input("贷款年利率 (%)", value=4.2, step=0.1, key="loan_rate_input") / 100
+        loan_years = st.number_input("贷款年限", min_value=1, value=15, key="loan_years_input")
+        repay_method = st.selectbox("还款方式", ["等额本息", "等额本金"], key="repay_method_select")
 
     replacements = []
     if use_replacement:
         st.subheader("🔧 大修/替换成本")
-        replace_count = st.number_input("替换事件数量", min_value=0, value=1, step=1)
+        replace_count = st.number_input("替换事件数量", min_value=0, value=1, step=1, key="replace_count")
         for i in range(replace_count):
             c1, c2 = st.columns(2)
             with c1:
@@ -467,12 +468,12 @@ if input_mode == "手动输入":
         st.subheader("🌱 碳排放与碳收益")
         col_c1, col_c2, col_c3 = st.columns(3)
         with col_c1:
-            emission_factor = st.number_input("电网排放因子 (kgCO\u2082/kWh)", value=0.58, step=0.01)
+            emission_factor = st.number_input("电网排放因子 (kgCO₂/kWh)", value=0.58, step=0.01, key="emission_factor")
         with col_c2:
-            carbon_price = st.number_input("碳价 (元/tCO\u2082)", value=50.0, step=5.0)
+            carbon_price = st.number_input("碳价 (元/tCO₂)", value=50.0, step=5.0, key="carbon_price")
         with col_c3:
-            green_cert_price = st.number_input("绿证价格 (元/个)", value=7.76, step=0.5)
-        annual_green_gen = st.number_input("年自发绿电量 (万kWh)", value=60000.0, step=100.0)
+            green_cert_price = st.number_input("绿证价格 (元/个)", value=7.76, step=0.5, key="green_cert_price")
+        annual_green_gen = st.number_input("年自发绿电量 (万kWh)", value=60000.0, step=100.0, key="annual_green_gen")
         carbon_params = [emission_factor, carbon_price, green_cert_price, annual_green_gen]
 
     st.session_state.params = {
@@ -826,10 +827,10 @@ if (use_irr_backsolve or use_irr_contour) and input_mode == "手动输入":
             st.subheader("单参数逆向求解与盈亏分析")
             col1, col2 = st.columns(2)
             with col1:
-                target_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key="backsolve_target")
+                target_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key="backsolve_target_irr")
             with col2:
-                param_display = st.selectbox("选择要反算的参数", all_display_names, key="backsolve_param")
-            if st.button("开始逆向求解", key="run_backsolve"):
+                param_display = st.selectbox("选择要反算的参数", all_display_names, key="backsolve_param_select")
+            if st.button("开始逆向求解", key="run_backsolve_button"):
                 param_key = display_to_key[param_display]
                 base_val = key_to_base[param_key]
                 solved_val, success, msg = solve_param_for_target('irr', target_irr/100.0, param_key,
@@ -884,19 +885,19 @@ if (use_irr_backsolve or use_irr_contour) and input_mode == "手动输入":
             st.subheader("双参数盈亏边界等值线图")
             col_x, col_y = st.columns(2)
             with col_x:
-                param_x_disp = st.selectbox("X轴参数", all_display_names, key="contour_x")
+                param_x_disp = st.selectbox("X轴参数", all_display_names, key="contour_x_select")
             with col_y:
                 param_y_disp = st.selectbox("Y轴参数", all_display_names,
                                             index=min(1, len(all_display_names)-1) if len(all_display_names)>1 else 0,
-                                            key="contour_y")
-            target_contour_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key="contour_target")
-            if st.button("生成盈亏边界图", key="run_contour"):
+                                            key="contour_y_select")
+            target_contour_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key="contour_target_irr")
+            if st.button("生成盈亏边界图", key="run_contour_button"):
                 if param_x_disp == param_y_disp:
                     st.error("请选择两个不同的参数")
                 else:
                     param_x_key = display_to_key[param_x_disp]
                     param_y_key = display_to_key[param_y_disp]
-                    # 生成等值线图 (代码与之前一致，此处略)
+                    # 等值线图生成代码（占位，可按需补充）
                     st.info("等值线图功能已集成，代码省略，可按需补充")
     else:
         st.warning("请先在主界面输入基本参数")
