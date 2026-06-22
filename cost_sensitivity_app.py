@@ -628,9 +628,9 @@ def build_all_param_specs(base_params):
                           lambda p, v, idx=i: p['replacements'].__setitem__(idx, (p['replacements'][idx][0], v))))
     if base_params.get('use_carbon') and base_params.get('carbon_params'):
         cp = base_params['carbon_params']
-        specs.append(('emission_factor', '电网排放因子 (kgCO\u2082/kWh)', cp[0],
+        specs.append(('emission_factor', '电网排放因子 (kg$CO_2$/kWh)', cp[0],
                       lambda p, v: p['carbon_params'].__setitem__(0, v)))
-        specs.append(('carbon_price', '碳价 (元/tCO\u2082)', cp[1],
+        specs.append(('carbon_price', '碳价 (元/t$CO_2$)', cp[1],
                       lambda p, v: p['carbon_params'].__setitem__(1, v)))
         specs.append(('green_cert_price', '绿证价格 (元/个)', cp[2],
                       lambda p, v: p['carbon_params'].__setitem__(2, v)))
@@ -873,74 +873,73 @@ if (use_irr_backsolve or use_irr_contour) and input_mode == "手动输入":
     st.header("🎯 逆向与盈亏分析")
     if all_display_names:
         # ---------- 单参数逆向求解 (第一层) ----------
-        # ---------- 单参数逆向求解 (第一层) ----------
-if use_irr_backsolve:
-    st.subheader("单参数逆向求解与盈亏分析")
-    col1, col2 = st.columns(2)
-    with col1:
-        target_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key="backsolve_target")
-    with col2:
-        param_display = st.selectbox("选择要反算的参数", all_display_names, key="backsolve_param")
-    if st.button("开始逆向求解", key="run_backsolve"):
-        param_key = display_to_key[param_display]
-        base_val = key_to_base[param_key]  # 内部万元值
-        # 求解目标IRR
-        solved_val, success, msg = solve_param_for_target('irr', target_irr/100.0, param_key,
-                                                          deepcopy(st.session_state.params),
-                                                          all_specs, key_to_updater)
-        if success and solved_val is not None:
-            # 单位转换
-            scale = UNIT_SCALE
-            # 根据参数类型格式化
-            if param_key in ['n_base', 'loan_years']:
-                disp_val = int(round(solved_val))
-                base_disp = int(round(base_val))
-            else:
-                disp_val = solved_val / scale
-                base_disp = base_val / scale
-
-            # 求解盈亏平衡值 (IRR=0)
-            be_val, be_success, be_msg = solve_param_for_target('irr', 0.0, param_key,
-                                                                deepcopy(st.session_state.params),
-                                                                all_specs, key_to_updater)
-            # 盈亏平衡值也转换单位
-            be_disp = None
-            if be_success and be_val is not None:
-                if param_key in ['n_base', 'loan_years']:
-                    be_disp = int(round(be_val))
+        if use_irr_backsolve:
+            st.subheader("单参数逆向求解与盈亏分析")
+            col1, col2 = st.columns(2)
+            with col1:
+                target_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key="backsolve_target")
+            with col2:
+                param_display = st.selectbox("选择要反算的参数", all_display_names, key="backsolve_param")
+            if st.button("开始逆向求解", key="run_backsolve"):
+                param_key = display_to_key[param_display]
+                base_val = key_to_base[param_key]  # 内部万元值
+                # 求解目标IRR
+                solved_val, success, msg = solve_param_for_target('irr', target_irr/100.0, param_key,
+                                                                  deepcopy(st.session_state.params),
+                                                                  all_specs, key_to_updater)
+                if success and solved_val is not None:
+                    # 单位转换
+                    scale = UNIT_SCALE
+                    # 根据参数类型格式化
+                    if param_key in ['n_base', 'loan_years']:
+                        disp_val = int(round(solved_val))
+                        base_disp = int(round(base_val))
+                    else:
+                        disp_val = solved_val / scale
+                        base_disp = base_val / scale
+        
+                    # 求解盈亏平衡值 (IRR=0)
+                    be_val, be_success, be_msg = solve_param_for_target('irr', 0.0, param_key,
+                                                                        deepcopy(st.session_state.params),
+                                                                        all_specs, key_to_updater)
+                    # 盈亏平衡值也转换单位
+                    be_disp = None
+                    if be_success and be_val is not None:
+                        if param_key in ['n_base', 'loan_years']:
+                            be_disp = int(round(be_val))
+                        else:
+                            be_disp = be_val / scale
+        
+                    change_to_target = (disp_val - base_disp) / base_disp * 100 if base_disp != 0 else 0
+                    col_r1, col_r2, col_r3 = st.columns(3)
+                    col_r1.metric("当前值", f"{base_disp:.4f}" if not isinstance(base_disp, int) else f"{base_disp}")
+                    col_r2.metric(f"目标值 (IRR={target_irr}%)",
+                                  f"{disp_val:.4f}" if not isinstance(disp_val, int) else f"{disp_val}",
+                                  delta=f"{change_to_target:+.1f}%")
+                    if be_disp is not None:
+                        change_to_be = (be_disp - base_disp) / base_disp * 100 if base_disp != 0 else 0
+                        col_r3.metric("盈亏平衡值 (IRR=0)",
+                                      f"{be_disp:.4f}" if not isinstance(be_disp, int) else f"{be_disp}",
+                                      delta=f"{change_to_be:+.1f}%", delta_color="off")
+                    else:
+                        col_r3.metric("盈亏平衡值", "无解")
+                    st.success(f"? {msg}：要使 IRR = {target_irr}%，参数 **{param_display}** 应为 **{disp_val}**")
+                    # 验证
+                    p_verify = deepcopy(st.session_state.params)
+                    updater = key_to_updater.get(param_key)
+                    if updater:
+                        # 参数值需要还原为内部单位（因为p_verify内是万元）
+                        val_to_set = solved_val if param_key in ['n_base', 'loan_years'] else solved_val
+                        if param_key in ['n_base', 'loan_years']:
+                            updater(p_verify, int(round(val_to_set)))
+                        else:
+                            updater(p_verify, val_to_set)
+                    I_v, r_v, n_v, Q_v, C_v, cf_v = compute_full_project(p_verify)
+                    irr_v = irr(I_v, cf_v, n_v)
+                    npv_v = npv(I_v, cf_v, r_v, n_v)
+                    st.info(f"验证：此时 IRR = {irr_v*100:.4f}%，NPV = {npv_v/scale:.2f} {unit_label}")
                 else:
-                    be_disp = be_val / scale
-
-            change_to_target = (disp_val - base_disp) / base_disp * 100 if base_disp != 0 else 0
-            col_r1, col_r2, col_r3 = st.columns(3)
-            col_r1.metric("当前值", f"{base_disp:.4f}" if not isinstance(base_disp, int) else f"{base_disp}")
-            col_r2.metric(f"目标值 (IRR={target_irr}%)",
-                          f"{disp_val:.4f}" if not isinstance(disp_val, int) else f"{disp_val}",
-                          delta=f"{change_to_target:+.1f}%")
-            if be_disp is not None:
-                change_to_be = (be_disp - base_disp) / base_disp * 100 if base_disp != 0 else 0
-                col_r3.metric("盈亏平衡值 (IRR=0)",
-                              f"{be_disp:.4f}" if not isinstance(be_disp, int) else f"{be_disp}",
-                              delta=f"{change_to_be:+.1f}%", delta_color="off")
-            else:
-                col_r3.metric("盈亏平衡值", "无解")
-            st.success(f"✅ {msg}：要使 IRR = {target_irr}%，参数 **{param_display}** 应为 **{disp_val}**")
-            # 验证
-            p_verify = deepcopy(st.session_state.params)
-            updater = key_to_updater.get(param_key)
-            if updater:
-                # 参数值需要还原为内部单位（因为p_verify内是万元）
-                val_to_set = solved_val if param_key in ['n_base', 'loan_years'] else solved_val
-                if param_key in ['n_base', 'loan_years']:
-                    updater(p_verify, int(round(val_to_set)))
-                else:
-                    updater(p_verify, val_to_set)
-            I_v, r_v, n_v, Q_v, C_v, cf_v = compute_full_project(p_verify)
-            irr_v = irr(I_v, cf_v, n_v)
-            npv_v = npv(I_v, cf_v, r_v, n_v)
-            st.info(f"验证：此时 IRR = {irr_v*100:.4f}%，NPV = {npv_v/scale:.2f} {unit_label}")
-        else:
-            st.error(msg)
+                    st.error(msg)
 
         # ---------- 双参数等值线图 (第二层) ----------
         if use_irr_contour:
