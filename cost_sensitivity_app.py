@@ -193,6 +193,151 @@ def compute_full_project(params):
         cf_series = np.pad(cf_series, (0, n - len(cf_series)), constant_values=0)
     return I, r, n, Q, C_op, cf_series[:n]
 
+def solve_param_for_target(target_type, target_value, param_key, base_params, all_specs, key_to_updater):
+    """
+    逆向求解：使 target_type ('irr' 或 'npv') 达到 target_value 时，参数 param_key 的值。
+    target_value: irr为小数，npv为数值
+    """
+    # 获取基准值
+    base_val = None
+    for spec in all_specs:
+        if spec[0] == param_key:
+            base_val = spec[2]
+            break
+    if base_val is None:
+        return None, False, "参数未找到"
+
+    # 根据参数特性设定搜索范围
+    if param_key == 'r_base':
+        low, high = 0.005, 0.5
+    elif param_key in ['n_base', 'loan_years']:
+        low, high = 2, 50
+    elif param_key == 'loan_ratio':
+        low, high = 0.0, 1.0
+    else:
+        low = max(base_val * 0.1, 1e-6)
+        high = base_val * 5.0
+
+    def calc_target(p):
+        I_t, r_t, n_t, Q_t, C_t, cf_t = compute_full_project(p)
+        if target_type == 'irr':
+            return irr(I_t, cf_t, n_t)
+        else:  # npv
+            return npv(I_t, cf_t, p['r_base'], n_t)
+
+    def f(x):
+        p = deepcopy(base_params)
+        updater = key_to_updater.get(param_key)
+        if updater:
+            if param_key in ['n_base', 'loan_years']:
+                updater(p, max(1, round(x)))
+            else:
+                updater(p, x)
+        return calc_target(p)
+
+    # 二分法
+    try:
+        f_low = f(low)
+        f_high = f(high)
+        # 处理无解情况
+        if f_low is None or f_high is None or np.isnan(f_low) or np.isnan(f_high):
+            low *= 0.5
+            high *= 2.0
+            f_low = f(low)
+            f_high = f(high)
+        if (f_low - target_value) * (f_high - target_value) > 0:
+            return None, False, f"目标 {target_value} 不在参数范围内 (当前IRR区间 [{f_low*100:.2f}%, {f_high*100:.2f}%])"
+        for _ in range(100):
+            mid = (low + high) / 2
+            f_mid = f(mid)
+            if f_mid is None or np.isnan(f_mid):
+                if abs(f_low - target_value) < abs(f_high - target_value):
+                    high = mid
+                else:
+                    low = mid
+                continue
+            if abs(f_mid - target_value) < 1e-6:
+                return mid, True, "求解成功"
+            if (f_low - target_value) * (f_mid - target_value) <= 0:
+                high = mid
+                f_high = f_mid
+            else:
+                low = mid
+                f_low = f_mid
+        return (low + high) / 2, True, "求解收敛"
+    except Exception as e:
+        return None, False, str(e)
+
+def draw_irr_contour(param_x_key, param_y_key, target_irr_pct, base_params, all_specs, key_to_updater, key_to_base, display_to_key):
+    """绘制双参数等值线图，返回matplotlib figure"""
+    target = target_irr_pct / 100.0
+    # 获取当前值
+    x_base = key_to_base[param_x_key]
+    y_base = key_to_base[param_y_key]
+    # 设定网格范围：围绕当前值上下扩展 ±50%
+    x_min = x_base * 0.5
+    x_max = x_base * 1.5
+    y_min = y_base * 0.5
+    y_max = y_base * 1.5
+    # 确保非负
+    x_min = max(x_min, 1e-6)
+    y_min = max(y_min, 1e-6)
+    # 特殊参数范围调整
+    if param_x_key == 'r_base':
+        x_min, x_max = 0.01, 0.3
+    if param_y_key == 'r_base':
+        y_min, y_max = 0.01, 0.3
+    if param_x_key in ['n_base', 'loan_years']:
+        x_min, x_max = 2, 40
+    if param_y_key in ['n_base', 'loan_years']:
+        y_min, y_max = 2, 40
+    if param_x_key == 'loan_ratio':
+        x_min, x_max = 0.0, 1.0
+    if param_y_key == 'loan_ratio':
+        y_min, y_max = 0.0, 1.0
+
+    xs = np.linspace(x_min, x_max, 50)
+    ys = np.linspace(y_min, y_max, 50)
+    Z = np.zeros((len(ys), len(xs)))
+    for i, y in enumerate(ys):
+        for j, x in enumerate(xs):
+            p = deepcopy(base_params)
+            # 更新两个参数
+            updater_x = key_to_updater.get(param_x_key)
+            updater_y = key_to_updater.get(param_y_key)
+            if updater_x: updater_x(p, x)
+            if updater_y: updater_y(p, y)
+            # 计算IRR
+            I_t, r_t, n_t, Q_t, C_t, cf_t = compute_full_project(p)
+            irr_val = irr(I_t, cf_t, n_t)
+            if irr_val is None or np.isnan(irr_val):
+                Z[i, j] = np.nan
+            else:
+                Z[i, j] = irr_val
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    # 绘制填充云图
+    contourf = ax.contourf(xs, ys, Z, levels=20, cmap='RdYlGn', alpha=0.8)
+    # 绘制目标IRR等值线
+    if not np.all(np.isnan(Z)):
+        try:
+            contour = ax.contour(xs, ys, Z, levels=[target], colors='blue', linewidths=3, linestyles='--')
+            ax.clabel(contour, fmt='%.2f', colors='blue')
+        except:
+            pass
+    # 标注当前点
+    ax.plot(x_base, y_base, 'bo', markersize=12, markeredgecolor='white', markeredgewidth=2)
+    ax.annotate(f'当前\n({x_base:.2f}, {y_base:.2f})', (x_base, y_base),
+                textcoords="offset points", xytext=(10,10), fontsize=12, color='blue')
+    # 设置标签
+    param_x_display = display_to_key.get(param_x_key, param_x_key)
+    param_y_display = display_to_key.get(param_y_key, param_y_key)
+    ax.set_xlabel(param_x_display)
+    ax.set_ylabel(param_y_display)
+    ax.set_title(f'双参数盈亏边界 (目标IRR={target_irr_pct}%)')
+    fig.colorbar(contourf, ax=ax, label='IRR')
+    return fig
+
 # ---------- 页面设置 ----------
 st.set_page_config(page_title="项目经济性分析平台", layout="wide")
 st.title("项目成本计算与敏感性分析平台")
@@ -694,6 +839,90 @@ with tab3:
                     ax.legend()
                     plt.tight_layout()
                     st.pyplot(fig)
+
+# ---------- IRR逆向计算与盈亏分析 ----------
+st.sidebar.header("🎯 逆向分析工具")
+use_irr_backsolve = st.sidebar.checkbox("单参数逆向求解", value=False)
+use_irr_contour = st.sidebar.checkbox("双参数盈亏边界图", value=False)
+
+if (use_irr_backsolve or use_irr_contour) and input_mode == "手动输入":
+    st.header("🎯 逆向与盈亏分析")
+    if all_display_names:
+        # ---------- 单参数逆向求解 (第一层) ----------
+        if use_irr_backsolve:
+            st.subheader("单参数逆向求解与盈亏分析")
+            col1, col2 = st.columns(2)
+            with col1:
+                target_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key="backsolve_target")
+            with col2:
+                param_display = st.selectbox("选择要反算的参数", all_display_names, key="backsolve_param")
+            if st.button("开始逆向求解", key="run_backsolve"):
+                param_key = display_to_key[param_display]
+                base_val = key_to_base[param_key]
+                # 求解目标IRR对应的参数值
+                solved_val, success, msg = solve_param_for_target('irr', target_irr/100.0, param_key,
+                                                                  deepcopy(st.session_state.params),
+                                                                  all_specs, key_to_updater)
+                if success and solved_val is not None:
+                    if param_key in ['n_base', 'loan_years']:
+                        disp_val = int(round(solved_val))
+                    else:
+                        disp_val = round(solved_val, 4)
+                    # 求解盈亏平衡值 (IRR=0)
+                    be_val, be_success, be_msg = solve_param_for_target('irr', 0.0, param_key,
+                                                                        deepcopy(st.session_state.params),
+                                                                        all_specs, key_to_updater)
+                    # 计算变动幅度
+                    change_to_target = (disp_val - base_val) / base_val * 100
+                    # 展示结果卡片
+                    col_r1, col_r2, col_r3 = st.columns(3)
+                    col_r1.metric("当前值", f"{base_val:.4f}")
+                    col_r2.metric("目标值 (IRR={}%)".format(target_irr), f"{disp_val}",
+                                  delta=f"{change_to_target:+.1f}%")
+                    if be_success and be_val is not None:
+                        be_disp = int(round(be_val)) if param_key in ['n_base', 'loan_years'] else round(be_val, 4)
+                        change_to_be = (be_disp - base_val) / base_val * 100
+                        col_r3.metric("盈亏平衡值 (IRR=0)", f"{be_disp}",
+                                      delta=f"{change_to_be:+.1f}%", delta_color="off")
+                    else:
+                        col_r3.metric("盈亏平衡值", "无解")
+                    st.success(f"✅ 求解成功：要使 IRR = {target_irr}%，参数 **{param_display}** 应为 **{disp_val}**")
+                    # 验证
+                    p_verify = deepcopy(st.session_state.params)
+                    updater = key_to_updater.get(param_key)
+                    if updater:
+                        updater(p_verify, solved_val)
+                    I_v, r_v, n_v, Q_v, C_v, cf_v = compute_full_project(p_verify)
+                    irr_v = irr(I_v, cf_v, n_v)
+                    npv_v = npv(I_v, cf_v, r_v, n_v)
+                    st.info(f"验证：此时 IRR = {irr_v*100:.4f}%，NPV = {npv_v:.2f} 万元")
+                else:
+                    st.error(msg)
+
+        # ---------- 双参数等值线图 (第二层) ----------
+        if use_irr_contour:
+            st.subheader("双参数盈亏边界等值线图")
+            col_x, col_y = st.columns(2)
+            with col_x:
+                param_x_disp = st.selectbox("X轴参数", all_display_names, key="contour_x")
+            with col_y:
+                param_y_disp = st.selectbox("Y轴参数", all_display_names,
+                                            index=min(1, len(all_display_names)-1) if len(all_display_names)>1 else 0,
+                                            key="contour_y")
+            target_contour_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key="contour_target")
+            if st.button("生成盈亏边界图", key="run_contour"):
+                if param_x_disp == param_y_disp:
+                    st.error("请选择两个不同的参数")
+                else:
+                    param_x_key = display_to_key[param_x_disp]
+                    param_y_key = display_to_key[param_y_disp]
+                    fig = draw_irr_contour(param_x_key, param_y_key, target_contour_irr,
+                                           deepcopy(st.session_state.params),
+                                           all_specs, key_to_updater, key_to_base, display_to_key)
+                    if fig:
+                        st.pyplot(fig)
+    else:
+        st.warning("请先在主界面输入基本参数")
 
 st.sidebar.markdown("---")
 st.sidebar.caption("项目经济性分析平台 v3.5")
