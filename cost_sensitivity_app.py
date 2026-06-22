@@ -106,7 +106,7 @@ def loan_schedule(principal, annual_rate, years, method='等额本息'):
             balance -= annual_principal
         return payments, interests
 
-# ---------- 表达式求值 ----------
+# ---------- 表达式求值（内部所有值均为万元） ----------
 def safe_eval(expr, var_dict):
     expr = str(expr).replace(' ','')
     if not re.match(r'^[0-9a-zA-Z_\+\-\*/\(\)\.]+$', expr):
@@ -118,6 +118,11 @@ def safe_eval(expr, var_dict):
         return np.nan
 
 def parse_item_amount(amount_str, var_dict):
+    """
+    将用户输入的金额转换为内部万元单位。
+    如果 amount_str 是纯数字，直接返回 float（已经是万元，因为在分项构建时已乘缩放）。
+    如果 amount_str 是表达式字符串，则使用 var_dict（万元单位）求值，结果也是万元。
+    """
     if isinstance(amount_str, (int,float)):
         return float(amount_str)
     if not isinstance(amount_str, str):
@@ -309,29 +314,29 @@ def solve_param_for_target(target_type, target_value, param_key, base_params, al
             low = mid; f_low = f_mid
     return (low + high) / 2, True, "近似解"
 
-# ---------- 构建参数列表 (重构，无 lambda，彻底避免括号错误) ----------
-def _upd_I(p, v): p.update({'I': v})
-def _upd_r(p, v): p.update({'r_base': v})
-def _upd_n(p, v): p.update({'n_base': int(max(1, round(v)))})
-def _upd_C_op(p, v): p.update({'C_op': v})
-def _upd_Q(p, v): p.update({'Q': v})
-def _upd_loan_ratio(p, v): p.update({'loan_ratio': v})
-def _upd_loan_rate(p, v): p.update({'loan_rate': v})
-def _upd_loan_years(p, v): p.update({'loan_years': int(max(1, round(v)))})
+# ---------- 参数更新辅助函数 ----------
+def _upd_I(p, v): p['I'] = v
+def _upd_r(p, v): p['r_base'] = v
+def _upd_n(p, v): p['n_base'] = int(max(1, round(v)))
+def _upd_C_op(p, v): p['C_op'] = v
+def _upd_Q(p, v): p['Q'] = v
+def _upd_loan_ratio(p, v): p['loan_ratio'] = v
+def _upd_loan_rate(p, v): p['loan_rate'] = v
+def _upd_loan_years(p, v): p['loan_years'] = int(max(1, round(v)))
 def _make_upd_rev_amount(idx):
-    def upd(p, v): p['rev_items'][idx].update({'amount': v})
+    def upd(p, v): p['rev_items'][idx]['amount'] = v
     return upd
 def _make_upd_rev_growth(idx):
-    def upd(p, v): p['rev_items'][idx].update({'growth': v})
+    def upd(p, v): p['rev_items'][idx]['growth'] = v
     return upd
 def _make_upd_cost_amount(idx):
-    def upd(p, v): p['cost_items'][idx].update({'amount': v})
+    def upd(p, v): p['cost_items'][idx]['amount'] = v
     return upd
 def _make_upd_cost_growth(idx):
-    def upd(p, v): p['cost_items'][idx].update({'growth': v})
+    def upd(p, v): p['cost_items'][idx]['growth'] = v
     return upd
 def _make_upd_var(k):
-    def upd(p, v): p['custom_vars'].update({k: v})
+    def upd(p, v): p['custom_vars'][k] = v
     return upd
 def _make_upd_replace(idx):
     def upd(p, v): p['replacements'][idx] = (p['replacements'][idx][0], v)
@@ -440,6 +445,7 @@ if input_mode == "手动输入":
     else:
         Q = 1.0; C_op = 0.0
 
+    # 自定义变量：存储用户输入的原始值（不乘缩放）
     with st.expander("🔢 自定义变量（用于公式）"):
         st.caption("定义中间变量，如 Q_green, P_green。金额列可使用表达式（如 Q_green * P_green）")
         if 'custom_vars_df' not in st.session_state:
@@ -456,7 +462,8 @@ if input_mode == "手动输入":
         custom_vars = {}
         for _, row in edited_vars.iterrows():
             if row['变量名'] and row['变量名'].strip():
-                custom_vars[row['变量名'].strip()] = row['数值'] * UNIT_SCALE
+                # 存储原始数值，不乘缩放
+                custom_vars[row['变量名'].strip()] = row['数值']
         st.session_state.custom_vars = custom_vars
 
     rev_items = []
@@ -495,6 +502,7 @@ if input_mode == "手动输入":
                 if row['项目名称']:
                     amount = row['金额']
                     growth = row['年增长率(%)']/100.0 if row['年增长率(%)'] else 0.0
+                    # 如果是纯数字，乘以单位缩放；否则保留字符串（表达式）
                     try:
                         num_amt = float(amount)
                         amount = num_amt * UNIT_SCALE
@@ -529,6 +537,7 @@ if input_mode == "手动输入":
 
         cf_series = None
 
+    # 融资、替换、碳收益等与之前相同，略（未修改）
     loan_ratio=0.0; loan_rate=0.0; loan_years=0; repay_method='等额本息'
     if use_finance:
         st.subheader("🏦 融资结构")
@@ -563,7 +572,7 @@ if input_mode == "手动输入":
         'use_advanced_cf': use_advanced_cf,
         'rev_items': rev_items,
         'cost_items': cost_items,
-        'custom_vars': st.session_state.custom_vars,
+        'custom_vars': custom_vars,
         'use_finance':use_finance,'loan_ratio':loan_ratio,'loan_rate':loan_rate,
         'loan_years':loan_years,'repay_method':repay_method,
         'use_replacement':use_replacement,'replacements':replacements,
@@ -578,6 +587,9 @@ targets_to_show = st.session_state.get('selected_targets', ["NPV","IRR","LCOH"])
 
 if input_mode == "手动输入" and st.session_state.params:
     base_params = deepcopy(st.session_state.params)
+    # 重要：在计算前，将自定义变量转换为内部万元单位（因为它们在 params 中还是原始值）
+    for var_name in base_params['custom_vars']:
+        base_params['custom_vars'][var_name] *= UNIT_SCALE
     I,r,n,Q,C_op,cf = compute_full_project(base_params)
     npv_val = npv(I,cf,r,n)
     irr_val = irr(I,cf,n)
@@ -606,9 +618,10 @@ if input_mode == "手动输入" and st.session_state.params:
     c1.metric("现金流回收期", f"{pay_cash:.2f}年" if pay_cash!=float('inf') else "无法回收")
     c2.metric("会计回收期", f"{pay_account:.2f}年" if pay_account!=float('inf') else "无法回收")
 
-    # ---------- 逆向求解 ----------
+    # ---------- 逆向求解（注意单位转换） ----------
     if use_irr_backsolve:
         st.header("🎯 单参数逆向求解与盈亏分析")
+        # 注意：此时 base_params 中的 custom_vars 已经是万元，但 build_all_param_specs 需要的是内部万元值
         all_specs = build_all_param_specs(base_params, unit_label)
         all_display_names = [s[1] for s in all_specs]
         display_to_key = {s[1]: s[0] for s in all_specs}
@@ -624,7 +637,7 @@ if input_mode == "手动输入" and st.session_state.params:
             param_key = display_to_key[param_display]
             base_val = key_to_base[param_key]
             solved_val, success, msg = solve_param_for_target('irr', target_irr/100.0, param_key,
-                                                              deepcopy(st.session_state.params),
+                                                              deepcopy(base_params),
                                                               all_specs, key_to_updater)
             if success and solved_val is not None:
                 if param_key in ['n_base', 'loan_years']:
@@ -634,7 +647,7 @@ if input_mode == "手动输入" and st.session_state.params:
                     disp_val = solved_val / UNIT_SCALE
                     base_disp = base_val / UNIT_SCALE
                 be_val, be_success, be_msg = solve_param_for_target('irr', 0.0, param_key,
-                                                                    deepcopy(st.session_state.params),
+                                                                    deepcopy(base_params),
                                                                     all_specs, key_to_updater)
                 be_disp = None
                 if be_success and be_val is not None:
@@ -654,7 +667,7 @@ if input_mode == "手动输入" and st.session_state.params:
                 else:
                     col_r3.metric("盈亏平衡值", "无解")
                 st.success(f"✅ {msg}：要使 IRR = {target_irr}%，参数 **{param_display}** 应为 **{disp_val}**")
-                p_verify = deepcopy(st.session_state.params)
+                p_verify = deepcopy(base_params)
                 updater = key_to_updater.get(param_key)
                 if updater:
                     if param_key in ['n_base','loan_years']:
@@ -669,4 +682,4 @@ if input_mode == "手动输入" and st.session_state.params:
                 st.error(msg)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("氢能项目经济性分析平台 v5.3")
+st.sidebar.caption("氢能项目经济性分析平台 v5.4")
