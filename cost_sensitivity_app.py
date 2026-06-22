@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import os, requests, re
 from copy import deepcopy
+from io import BytesIO
 
 # ---------- 中文字体 ----------
 @st.cache_resource
@@ -597,41 +598,55 @@ st.header("📈 敏感性分析")
 
 def build_all_param_specs(base_params):
     specs = []
-    specs.append(('I',f'初始投资 ({unit_label})', base_params['I'], lambda p,v: p.update({'I':v})))
-    specs.append(('r_base','折现率 r', base_params['r_base'], lambda p,v: p.update({'r_base':v})))
-    specs.append(('n_base','项目寿命 (年)', base_params['n_base'], lambda p,v: p.update({'n_base':int(max(1,round(v))))}))
-    specs.append(('C_op',f'年运营成本 ({unit_label})', base_params['C_op'], lambda p,v: p.update({'C_op':v})))
+    # 基本参数
+    specs.append(('I', f'初始投资 ({unit_label})', base_params['I'], lambda p, v: p.update({'I': v})))
+    specs.append(('r_base', '折现率 r', base_params['r_base'], lambda p, v: p.update({'r_base': v})))
+    specs.append(('n_base', '项目寿命 (年)', base_params['n_base'], lambda p, v: p.update({'n_base': int(max(1, round(v)))})))
+    specs.append(('C_op', f'年运营成本 ({unit_label})', base_params['C_op'], lambda p, v: p.update({'C_op': v})))
+
+    # 收益项
     if base_params.get('use_advanced_cf') and base_params.get('rev_items'):
         for i, item in enumerate(base_params['rev_items']):
             name = item['name']
             specs.append((f'rev_{i}_amount', f'收益-{name} 金额', item['amount'],
-                          lambda p,v, idx=i: p['rev_items'][idx].update({'amount':v})))
+                          lambda p, v, idx=i: p['rev_items'][idx].update({'amount': v})))
             specs.append((f'rev_{i}_growth', f'收益-{name} 增长率', item['growth'],
-                          lambda p,v, idx=i: p['rev_items'][idx].update({'growth':v})))
+                          lambda p, v, idx=i: p['rev_items'][idx].update({'growth': v})))
+
+    # 支出项
     if base_params.get('use_advanced_cf') and base_params.get('cost_items'):
         for i, item in enumerate(base_params['cost_items']):
             name = item['name']
             specs.append((f'cost_{i}_amount', f'支出-{name} 金额', item['amount'],
-                          lambda p,v, idx=i: p['cost_items'][idx].update({'amount':v})))
+                          lambda p, v, idx=i: p['cost_items'][idx].update({'amount': v})))
             specs.append((f'cost_{i}_growth', f'支出-{name} 增长率', item['growth'],
-                          lambda p,v, idx=i: p['cost_items'][idx].update({'growth':v})))
+                          lambda p, v, idx=i: p['cost_items'][idx].update({'growth': v})))
+
+    # 自定义变量
     for var_name, var_val in base_params.get('custom_vars', {}).items():
         specs.append((f'var_{var_name}', f'变量-{var_name}', var_val,
                       lambda p, v, k=var_name: p['custom_vars'].update({k: v})))
+
+    # 融资参数
     if base_params.get('use_finance'):
-        specs.append(('loan_ratio','贷款比例', base_params['loan_ratio'], lambda p,v: p.update({'loan_ratio':v})))
-        specs.append(('loan_rate','贷款年利率', base_params['loan_rate'], lambda p,v: p.update({'loan_rate':v})))
-        specs.append(('loan_years','贷款年限', base_params['loan_years'], lambda p,v: p.update({'loan_years':int(max(1,round(v))))}))
+        specs.append(('loan_ratio', '贷款比例', base_params['loan_ratio'], lambda p, v: p.update({'loan_ratio': v})))
+        specs.append(('loan_rate', '贷款年利率', base_params['loan_rate'], lambda p, v: p.update({'loan_rate': v})))
+        specs.append(('loan_years', '贷款年限', base_params['loan_years'], lambda p, v: p.update({'loan_years': int(max(1, round(v)))})))
+
+    # 替换成本
     if base_params.get('use_replacement') and base_params.get('replacements'):
-        for i,(yr,cost) in enumerate(base_params['replacements']):
+        for i, (yr, cost) in enumerate(base_params['replacements']):
             specs.append((f'replace_{i}_cost', f'替换{i+1}金额', cost,
-                          lambda p,v, idx=i: p['replacements'].__setitem__(idx, (p['replacements'][idx][0], v))))
+                          lambda p, v, idx=i: p['replacements'].__setitem__(idx, (p['replacements'][idx][0], v))))
+
+    # 碳排放参数
     if base_params.get('use_carbon') and base_params.get('carbon_params'):
-        cp = base_params['carbon_params']
-        specs.append(('emission_factor','排放因子', cp[0], lambda p,v: p['carbon_params'].__setitem__(0,v)))
-        specs.append(('carbon_price','碳价', cp[1], lambda p,v: p['carbon_params'].__setitem__(1,v)))
-        specs.append(('green_cert_price','绿证价格', cp[2], lambda p,v: p['carbon_params'].__setitem__(2,v)))
-        specs.append(('annual_green_gen','自发绿电', cp[3], lambda p,v: p['carbon_params'].__setitem__(3,v)))
+        cp_list = base_params['carbon_params']
+        specs.append(('emission_factor', '排放因子', cp_list[0], lambda p, v: p['carbon_params'].__setitem__(0, v)))
+        specs.append(('carbon_price', '碳价', cp_list[1], lambda p, v: p['carbon_params'].__setitem__(1, v)))
+        specs.append(('green_cert_price', '绿证价格', cp_list[2], lambda p, v: p['carbon_params'].__setitem__(2, v)))
+        specs.append(('annual_green_gen', '自发绿电', cp_list[3], lambda p, v: p['carbon_params'].__setitem__(3, v)))
+
     return specs
 
 if input_mode == "手动输入":
