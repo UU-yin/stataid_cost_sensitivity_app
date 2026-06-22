@@ -194,21 +194,16 @@ def compute_full_project(params):
     return I, r, n, Q, C_op, cf_series[:n]
 
 def solve_param_for_target(target_type, target_value, param_key, base_params, all_specs, key_to_updater):
-    """
-    逆向求解：使 target_type ('irr' 或 'npv') 达到 target_value 时，参数 param_key 的值。
-    target_value: irr为小数，npv为数值
-    返回: (求解值, 是否成功, 消息)
-    """
-    # 获取参数基准值
+    # 获取基准值
     base_val = None
     for spec in all_specs:
         if spec[0] == param_key:
-            base_val = spec[2]  # 内部万元单位
+            base_val = spec[2]
             break
     if base_val is None:
         return None, False, "参数未找到"
 
-    # 动态设定搜索范围，扩大倍数以提高收敛性
+    # 设定搜索范围，自动处理负值
     if param_key == 'r_base':
         low, high = 0.005, 0.5
     elif param_key in ['n_base', 'loan_years']:
@@ -216,67 +211,88 @@ def solve_param_for_target(target_type, target_value, param_key, base_params, al
     elif param_key == 'loan_ratio':
         low, high = 0.0, 1.0
     else:
-        # 使用基准值的 0.5 ~ 2.0 倍，避免过小范围
-        low = base_val * 0.5
-        high = base_val * 2.0
+        # 根据基准值的符号设定初始范围
+        if base_val >= 0:
+            low = base_val * 0.5
+            high = base_val * 2.0
+        else:
+            # 负值：确保 low < high
+            high = base_val * 0.5   # 更负
+            low = base_val * 2.0    # 更接近0
+        # 避免0边界
         if low == 0:
             low = 1e-6
+        if high == 0:
+            high = -1e-6
+        # 保证 low < high
+        if low > high:
+            low, high = high, low
 
-    def calc_target(p):
+    def calc_irr(p):
         I_t, r_t, n_t, Q_t, C_t, cf_t = compute_full_project(p)
-        if target_type == 'irr':
-            val = irr(I_t, cf_t, n_t)
-            if val is None or np.isnan(val):
-                return np.nan
-            return val
-        else:  # npv
-            return npv(I_t, cf_t, p['r_base'], n_t)
+        val = irr(I_t, cf_t, n_t)
+        if val is None or np.isnan(val):
+            return np.nan
+        return val
+
+    def calc_npv(p):
+        I_t, r_t, n_t, Q_t, C_t, cf_t = compute_full_project(p)
+        return npv(I_t, cf_t, p['r_base'], n_t)
 
     def f(x):
         p = deepcopy(base_params)
         updater = key_to_updater.get(param_key)
         if updater is None:
             return np.nan
-        # 根据参数类型进行赋值（寿命等需取整）
         if param_key in ['n_base', 'loan_years']:
             updater(p, max(1, int(round(x))))
         else:
             updater(p, x)
-        return calc_target(p)
+        if target_type == 'irr':
+            return calc_irr(p)
+        else:
+            return calc_npv(p)
 
-    # 检查端点有效性
+    # 计算基准IRR（用于检查参数敏感性）
+    base_irr = calc_irr(base_params)
+    if base_irr is None or np.isnan(base_irr):
+        return None, False, "基准参数无法计算有效IRR，请检查输入"
+
+    # 多次尝试扩展区间，直到得到两个不同的有效IRR
     f_low = f(low)
     f_high = f(high)
-    # 扩展区间直到端点 IRR 不同
-    expand_try = 0
-    while (np.isnan(f_low) or np.isnan(f_high) or abs(f_low - f_high) < 1e-8) and expand_try < 10:
+    attempts = 0
+    while (np.isnan(f_low) or np.isnan(f_high) or abs(f_low - f_high) < 1e-8) and attempts < 30:
         if np.isnan(f_low):
-            low *= 0.8
+            low *= 0.9
             f_low = f(low)
         if np.isnan(f_high):
-            high *= 1.2
+            high *= 1.1
             f_high = f(high)
         if not np.isnan(f_low) and not np.isnan(f_high) and abs(f_low - f_high) < 1e-8:
-            # 区间内IRR几乎不变，强制扩大
+            # IRR变化极小，参数可能不敏感
             low *= 0.5
             high *= 1.5
             f_low = f(low)
             f_high = f(high)
-        expand_try += 1
+        attempts += 1
 
     if np.isnan(f_low) or np.isnan(f_high):
-        return None, False, "无法计算有效IRR，请检查参数"
+        return None, False, f"无法在参数区间内计算有效IRR（low={low:.4f}, high={high:.4f}）。请检查参数是否对IRR有影响"
 
-    # 检查目标是否在区间内
+    # 检查参数是否影响IRR
+    if abs(f_high - base_irr) < 1e-6 and abs(f_low - base_irr) < 1e-6:
+        return None, False, "该参数在当前范围内几乎不影响IRR，逆向求解无意义"
+
+    # 目标是否可达
     if (f_low - target_value) * (f_high - target_value) > 0:
-        return None, False, f"目标 {target_value} 不在参数取值范围的IRR区间 [{f_low*100:.2f}%, {f_high*100:.2f}%] 内"
+        return None, False, f"目标 {target_value} 不在区间 IRR [{f_low*100:.2f}%, {f_high*100:.2f}%] 内，请调整目标或更换参数"
 
-    # 二分法求解
+    # 二分法
     for _ in range(100):
         mid = (low + high) / 2
         f_mid = f(mid)
         if np.isnan(f_mid):
-            # 如果中点无效，向端点靠拢
             if abs(f_low - target_value) < abs(f_high - target_value):
                 high = mid
             else:
