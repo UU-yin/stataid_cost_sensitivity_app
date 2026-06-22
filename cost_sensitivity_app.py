@@ -814,11 +814,6 @@ with tab3:
                     plt.tight_layout()
                     st.pyplot(fig)
 
-# ---------- IRR逆向计算与盈亏分析 ----------
-st.sidebar.header("🎯 逆向分析工具")
-use_irr_backsolve = st.sidebar.checkbox("单参数逆向求解", value=False)
-use_irr_contour = st.sidebar.checkbox("双参数盈亏边界图", value=False)
-
 # ---------- 逆向求解 ----------
 if (use_irr_backsolve or use_irr_contour) and input_mode == "手动输入":
     st.header("🎯 逆向与盈亏分析")
