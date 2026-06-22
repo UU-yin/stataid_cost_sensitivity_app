@@ -203,7 +203,7 @@ def solve_param_for_target(target_type, target_value, param_key, base_params, al
     if base_val is None:
         return None, False, "参数未找到"
 
-    # 设定搜索范围，自动处理负值
+    # 初始搜索范围
     if param_key == 'r_base':
         low, high = 0.005, 0.5
     elif param_key in ['n_base', 'loan_years']:
@@ -211,29 +211,23 @@ def solve_param_for_target(target_type, target_value, param_key, base_params, al
     elif param_key == 'loan_ratio':
         low, high = 0.0, 1.0
     else:
-        # 根据基准值的符号设定初始范围
         if base_val >= 0:
             low = base_val * 0.5
             high = base_val * 2.0
         else:
-            # 负值：确保 low < high
-            high = base_val * 0.5   # 更负
-            low = base_val * 2.0    # 更接近0
-        # 避免0边界
+            high = base_val * 0.5   # 更负的值（high < low）
+            low = base_val * 2.0    # 更接近0的值
         if low == 0:
             low = 1e-6
         if high == 0:
             high = -1e-6
-        # 保证 low < high
         if low > high:
             low, high = high, low
 
     def calc_irr(p):
         I_t, r_t, n_t, Q_t, C_t, cf_t = compute_full_project(p)
         val = irr(I_t, cf_t, n_t)
-        if val is None or np.isnan(val):
-            return np.nan
-        return val
+        return np.nan if val is None or np.isnan(val) else val
 
     def calc_npv(p):
         I_t, r_t, n_t, Q_t, C_t, cf_t = compute_full_project(p)
@@ -248,47 +242,65 @@ def solve_param_for_target(target_type, target_value, param_key, base_params, al
             updater(p, max(1, int(round(x))))
         else:
             updater(p, x)
-        if target_type == 'irr':
-            return calc_irr(p)
-        else:
-            return calc_npv(p)
+        return calc_irr(p) if target_type == 'irr' else calc_npv(p)
 
-    # 计算基准IRR（用于检查参数敏感性）
+    # 检查基准IRR有效性
     base_irr = calc_irr(base_params)
     if base_irr is None or np.isnan(base_irr):
         return None, False, "基准参数无法计算有效IRR，请检查输入"
 
-    # 多次尝试扩展区间，直到得到两个不同的有效IRR
+    # 计算初始端点
     f_low = f(low)
     f_high = f(high)
-    attempts = 0
-    while (np.isnan(f_low) or np.isnan(f_high) or abs(f_low - f_high) < 1e-8) and attempts < 30:
+
+    # ----- 自动扩展包围目标 -----
+    max_extend_attempts = 50
+    extend_count = 0
+    # 当目标不在端点值之间，或端点无效时，尝试扩展
+    while extend_count < max_extend_attempts:
+        if not np.isnan(f_low) and not np.isnan(f_high):
+            if min(f_low, f_high) <= target_value <= max(f_low, f_high):
+                break
+        # 扩展策略：若目标小于 min(f_low,f_high)，则移动使 IRR 减小的那侧端点
+        # 先处理无效端点
         if np.isnan(f_low):
-            low *= 0.9
-            f_low = f(low)
-        if np.isnan(f_high):
-            high *= 1.1
-            f_high = f(high)
-        if not np.isnan(f_low) and not np.isnan(f_high) and abs(f_low - f_high) < 1e-8:
-            # IRR变化极小，参数可能不敏感
             low *= 0.5
-            high *= 1.5
             f_low = f(low)
+        elif np.isnan(f_high):
+            high *= 1.5
             f_high = f(high)
-        attempts += 1
+        else:
+            # 端点都有效，但目标不在区间
+            if target_value < min(f_low, f_high):
+                # 需要更小的 IRR，尝试减小低端或增加高端
+                if f_low <= f_high:
+                    low *= 0.5
+                    f_low = f(low)
+                else:
+                    high *= 2.0
+                    f_high = f(high)
+            else:  # target > max(f_low, f_high)
+                # 需要更大的 IRR
+                if f_low >= f_high:
+                    low *= 0.5
+                    f_low = f(low)
+                else:
+                    high *= 2.0
+                    f_high = f(high)
+        extend_count += 1
 
     if np.isnan(f_low) or np.isnan(f_high):
-        return None, False, f"无法在参数区间内计算有效IRR（low={low:.4f}, high={high:.4f}）。请检查参数是否对IRR有影响"
+        return None, False, f"无法在扩展后的参数区间内获得有效IRR（low={low:.4f}, high={high:.4f}）"
 
     # 检查参数是否影响IRR
     if abs(f_high - base_irr) < 1e-6 and abs(f_low - base_irr) < 1e-6:
         return None, False, "该参数在当前范围内几乎不影响IRR，逆向求解无意义"
 
-    # 目标是否可达
+    # 若仍未被包围，说明目标值不可达
     if (f_low - target_value) * (f_high - target_value) > 0:
-        return None, False, f"目标 {target_value} 不在区间 IRR [{f_low*100:.2f}%, {f_high*100:.2f}%] 内，请调整目标或更换参数"
+        return None, False, f"目标 {target_value*100 if target_type=='irr' else target_value:.2f} 无法达到（IRR范围 [{f_low*100:.2f}%, {f_high*100:.2f}%]）"
 
-    # 二分法
+    # 二分法求解
     for _ in range(100):
         mid = (low + high) / 2
         f_mid = f(mid)
