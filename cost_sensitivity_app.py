@@ -118,6 +118,7 @@ def safe_eval(expr, var_dict):
         return np.nan
 
 def parse_item_amount(amount_str, var_dict):
+    """将金额字符串转换为内部万元单位。如果字符串是纯数字，直接转浮点；否则当作表达式求值（变量已是万元）"""
     if isinstance(amount_str, (int,float)):
         return float(amount_str)
     if not isinstance(amount_str, str):
@@ -212,11 +213,148 @@ def payback_period(I, cf_series):
             return (t-1) + (I-prev)/cf
     return float('inf')
 
+# ---------- 逆向求解函数 ----------
+def solve_param_for_target(target_type, target_value, param_key, base_params, all_specs, key_to_updater):
+    base_val = None
+    for spec in all_specs:
+        if spec[0] == param_key:
+            base_val = spec[2]
+            break
+    if base_val is None:
+        return None, False, "参数未找到"
+
+    if param_key == 'r_base':
+        low, high = 0.005, 0.5
+    elif param_key in ['n_base', 'loan_years']:
+        low, high = 2, 50
+    elif param_key == 'loan_ratio':
+        low, high = 0.0, 1.0
+    else:
+        if base_val >= 0:
+            low = base_val * 0.1
+            high = base_val * 5.0
+        else:
+            low = base_val * 5.0
+            high = base_val * 0.1
+        if low == 0: low = 1e-6
+        if high == 0: high = -1e-6
+        if low > high: low, high = high, low
+
+    def calc_target(p):
+        I_t, r_t, n_t, Q_t, C_t, cf_t = compute_full_project(p)
+        if target_type == 'irr':
+            val = irr(I_t, cf_t, n_t)
+            if val is None or np.isnan(val):
+                cf_full = np.insert(cf_t, 0, -I_t)
+                if np.all(cf_full >= 0): return 9.99
+                elif np.all(cf_full <= 0): return -0.01
+                else: return np.nan
+            return val
+        else:
+            return npv(I_t, cf_t, p['r_base'], n_t)
+
+    def f(x):
+        p = deepcopy(base_params)
+        updater = key_to_updater.get(param_key)
+        if updater is None: return np.nan
+        if param_key in ['n_base', 'loan_years']:
+            updater(p, max(1, int(round(x))))
+        else:
+            updater(p, x)
+        return calc_target(p)
+
+    base_target_val = calc_target(base_params)
+    if base_target_val is None or np.isnan(base_target_val):
+        return None, False, "基准参数无法计算有效IRR"
+
+    f_low = f(low)
+    f_high = f(high)
+    expand_count = 0
+    max_expand = 50
+    while expand_count < max_expand:
+        if not np.isnan(f_low) and not np.isnan(f_high):
+            if min(f_low, f_high) <= target_value <= max(f_low, f_high):
+                break
+        if np.isnan(f_low):
+            low *= 0.5; f_low = f(low)
+        elif np.isnan(f_high):
+            high *= 1.5; f_high = f(high)
+        else:
+            if target_value < min(f_low, f_high):
+                if f_low <= f_high: low *= 0.5; f_low = f(low)
+                else: high *= 0.5; f_high = f(high)
+            else:
+                if f_low >= f_high: low *= 0.5; f_low = f(low)
+                else: high *= 1.5; f_high = f(high)
+        expand_count += 1
+
+    if np.isnan(f_low) or np.isnan(f_high):
+        return None, False, "无法计算有效IRR区间"
+    if abs(f_high - base_target_val) < 1e-6 and abs(f_low - base_target_val) < 1e-6:
+        return None, False, "该参数几乎不影响IRR"
+    if (f_low - target_value) * (f_high - target_value) > 0:
+        return None, False, f"目标IRR {target_value*100:.2f}% 不可达（范围 [{f_low*100:.2f}%, {f_high*100:.2f}%]）"
+
+    for _ in range(100):
+        mid = (low + high) / 2
+        f_mid = f(mid)
+        if np.isnan(f_mid):
+            if abs(f_low - target_value) < abs(f_high - target_value): high = mid
+            else: low = mid
+            continue
+        if abs(f_mid - target_value) < 1e-6:
+            return mid, True, "求解成功"
+        if (f_low - target_value) * (f_mid - target_value) <= 0:
+            high = mid; f_high = f_mid
+        else:
+            low = mid; f_low = f_mid
+    return (low + high) / 2, True, "近似解"
+
+# ---------- 构建参数列表 ----------
+def build_all_param_specs(base_params, unit_label):
+    specs = []
+    specs.append(('I', f'初始投资 ({unit_label})', base_params['I'], lambda p, v: p.update({'I': v})))
+    specs.append(('r_base', '折现率 r', base_params['r_base'], lambda p, v: p.update({'r_base': v})))
+    specs.append(('n_base', '项目寿命 (年)', base_params['n_base'], lambda p, v: p.update({'n_base': int(max(1, round(v))))}))
+    specs.append(('C_op', f'年运营成本 ({unit_label})', base_params['C_op'], lambda p, v: p.update({'C_op': v})))
+    if base_params.get('use_advanced_cf') and base_params.get('rev_items'):
+        for i, item in enumerate(base_params['rev_items']):
+            name = item['name']
+            specs.append((f'rev_{i}_amount', f'收益-{name} 金额', item['amount'],
+                          lambda p, v, idx=i: p['rev_items'][idx].update({'amount': v})))
+            specs.append((f'rev_{i}_growth', f'收益-{name} 增长率', item['growth'],
+                          lambda p, v, idx=i: p['rev_items'][idx].update({'growth': v})))
+    if base_params.get('use_advanced_cf') and base_params.get('cost_items'):
+        for i, item in enumerate(base_params['cost_items']):
+            name = item['name']
+            specs.append((f'cost_{i}_amount', f'支出-{name} 金额', item['amount'],
+                          lambda p, v, idx=i: p['cost_items'][idx].update({'amount': v})))
+            specs.append((f'cost_{i}_growth', f'支出-{name} 增长率', item['growth'],
+                          lambda p, v, idx=i: p['cost_items'][idx].update({'growth': v})))
+    for var_name, var_val in base_params.get('custom_vars', {}).items():
+        specs.append((f'var_{var_name}', f'变量-{var_name}', var_val,
+                      lambda p, v, k=var_name: p['custom_vars'].update({k: v})))
+    if base_params.get('use_finance'):
+        specs.append(('loan_ratio', '贷款比例', base_params['loan_ratio'], lambda p, v: p.update({'loan_ratio': v})))
+        specs.append(('loan_rate', '贷款年利率', base_params['loan_rate'], lambda p, v: p.update({'loan_rate': v})))
+        specs.append(('loan_years', '贷款年限', base_params['loan_years'], lambda p, v: p.update({'loan_years': int(max(1, round(v))))}))
+    if base_params.get('use_replacement') and base_params.get('replacements'):
+        for i, (yr, cost) in enumerate(base_params['replacements']):
+            specs.append((f'replace_{i}_cost', f'替换{i+1}金额', cost,
+                          lambda p, v, idx=i: p['replacements'].__setitem__(idx, (p['replacements'][idx][0], v))))
+    if base_params.get('use_carbon') and base_params.get('carbon_params'):
+        cp_list = base_params['carbon_params']
+        specs.append(('emission_factor', '排放因子', cp_list[0], lambda p, v: p['carbon_params'].__setitem__(0, v)))
+        specs.append(('carbon_price', '碳价', cp_list[1], lambda p, v: p['carbon_params'].__setitem__(1, v)))
+        specs.append(('green_cert_price', '绿证价格', cp_list[2], lambda p, v: p['carbon_params'].__setitem__(2, v)))
+        specs.append(('annual_green_gen', '自发绿电', cp_list[3], lambda p, v: p['carbon_params'].__setitem__(3, v)))
+    return specs
+
 # ---------- 页面设置 ----------
 st.set_page_config(page_title="项目经济性分析平台", layout="wide")
 st.title("项目成本计算与敏感性分析平台")
 
-# ---------- 侧边栏 (确保所有key唯一) ----------
+# ---------- 侧边栏 (所有key已唯一化) ----------
 st.sidebar.header("📌 分析方法")
 analysis_scope = st.sidebar.selectbox("指标数量", ["单个","两个","三个"], index=1, key='scope_sel')
 all_targets = ["NPV","IRR","LCOH"]
@@ -239,6 +377,9 @@ use_carbon = st.sidebar.checkbox("碳排放与碳收益", value=False, key='carb
 use_finance = st.sidebar.checkbox("融资结构", value=False, key='finance_check')
 use_replacement = st.sidebar.checkbox("大修/替换成本", value=False, key='replace_check')
 use_lcoe = st.sidebar.checkbox("计算LCOE", value=False, key='lcoe_check')
+
+st.sidebar.header("🎯 逆向工具")
+use_irr_backsolve = st.sidebar.checkbox("单参数逆向求解", value=False, key='backsolve_check')
 
 # ---------- 输入方式 ----------
 st.header("📥 数据输入")
@@ -292,7 +433,8 @@ if input_mode == "手动输入":
         custom_vars = {}
         for _, row in edited_vars.iterrows():
             if row['变量名'] and row['变量名'].strip():
-                custom_vars[row['变量名'].strip()] = row['数值']
+                # 注意：自定义变量数值也要乘以单位，因为用户是按显示单位输入的
+                custom_vars[row['变量名'].strip()] = row['数值'] * UNIT_SCALE
         st.session_state.custom_vars = custom_vars
 
     rev_items = []
@@ -331,6 +473,12 @@ if input_mode == "手动输入":
                 if row['项目名称']:
                     amount = row['金额']
                     growth = row['年增长率(%)']/100.0 if row['年增长率(%)'] else 0.0
+                    # 金额处理：如果是纯数字，乘以单位缩放；否则保留字符串（表达式）
+                    try:
+                        num_amt = float(amount)
+                        amount = num_amt * UNIT_SCALE
+                    except:
+                        pass
                     rev_items.append({'name': row['项目名称'], 'amount': amount, 'growth': growth})
         with tab_cost:
             st.caption("金额列支持表达式")
@@ -351,6 +499,11 @@ if input_mode == "手动输入":
                 if row['项目名称']:
                     amount = row['金额']
                     growth = row['年增长率(%)']/100.0 if row['年增长率(%)'] else 0.0
+                    try:
+                        num_amt = float(amount)
+                        amount = num_amt * UNIT_SCALE
+                    except:
+                        pass
                     cost_items.append({'name': row['项目名称'], 'amount': amount, 'growth': growth})
 
         cf_series = None
@@ -433,9 +586,68 @@ if input_mode == "手动输入" and st.session_state.params:
     c1.metric("现金流回收期", f"{pay_cash:.2f}年" if pay_cash!=float('inf') else "无法回收")
     c2.metric("会计回收期", f"{pay_account:.2f}年" if pay_account!=float('inf') else "无法回收")
 
-# ---------- 敏感性分析 (仅保留单因素作为示例，但完整保留双因素和Sobol会导致key重复，已去掉，保证可用) ----------
-# 若需要其他分析模块，后续可逐步添加，务必确保key唯一
-st.info("✅ 基础计算模块已正常运行。高级敏感性分析及逆向工具将在后续版本中重新集成（保证无key冲突）。")
+    # ---------- 逆向求解模块 ----------
+    if use_irr_backsolve:
+        st.header("🎯 单参数逆向求解与盈亏分析")
+        all_specs = build_all_param_specs(base_params, unit_label)
+        all_display_names = [s[1] for s in all_specs]
+        display_to_key = {s[1]: s[0] for s in all_specs}
+        key_to_base = {s[0]: s[2] for s in all_specs}
+        key_to_updater = {s[0]: s[3] for s in all_specs}
+
+        col1, col2 = st.columns(2)
+        with col1:
+            target_irr = st.number_input("目标 IRR (%)", value=9.0, step=0.1, key='backsolve_target_irr')
+        with col2:
+            param_display = st.selectbox("选择要反算的参数", all_display_names, key='backsolve_param_sel')
+        if st.button("开始逆向求解", key='backsolve_button'):
+            param_key = display_to_key[param_display]
+            base_val = key_to_base[param_key]
+            solved_val, success, msg = solve_param_for_target('irr', target_irr/100.0, param_key,
+                                                              deepcopy(st.session_state.params),
+                                                              all_specs, key_to_updater)
+            if success and solved_val is not None:
+                if param_key in ['n_base', 'loan_years']:
+                    disp_val = int(round(solved_val))
+                    base_disp = int(round(base_val))
+                else:
+                    disp_val = solved_val / UNIT_SCALE
+                    base_disp = base_val / UNIT_SCALE
+                be_val, be_success, be_msg = solve_param_for_target('irr', 0.0, param_key,
+                                                                    deepcopy(st.session_state.params),
+                                                                    all_specs, key_to_updater)
+                be_disp = None
+                if be_success and be_val is not None:
+                    if param_key in ['n_base', 'loan_years']:
+                        be_disp = int(round(be_val))
+                    else:
+                        be_disp = be_val / UNIT_SCALE
+                change_to_target = (disp_val - base_disp) / base_disp * 100 if base_disp != 0 else 0
+                col_r1, col_r2, col_r3 = st.columns(3)
+                col_r1.metric("当前值", f"{base_disp:.4f}" if not isinstance(base_disp,int) else f"{base_disp}")
+                col_r2.metric(f"目标值 (IRR={target_irr}%)", f"{disp_val:.4f}" if not isinstance(disp_val,int) else f"{disp_val}",
+                              delta=f"{change_to_target:+.1f}%")
+                if be_disp is not None:
+                    change_to_be = (be_disp - base_disp) / base_disp * 100 if base_disp != 0 else 0
+                    col_r3.metric("盈亏平衡值 (IRR=0)", f"{be_disp:.4f}" if not isinstance(be_disp,int) else f"{be_disp}",
+                                  delta=f"{change_to_be:+.1f}%", delta_color="off")
+                else:
+                    col_r3.metric("盈亏平衡值", "无解")
+                st.success(f"✅ {msg}：要使 IRR = {target_irr}%，参数 **{param_display}** 应为 **{disp_val}**")
+                # 验证
+                p_verify = deepcopy(st.session_state.params)
+                updater = key_to_updater.get(param_key)
+                if updater:
+                    if param_key in ['n_base','loan_years']:
+                        updater(p_verify, int(round(solved_val)))
+                    else:
+                        updater(p_verify, solved_val)
+                I_v, r_v, n_v, Q_v, C_v, cf_v = compute_full_project(p_verify)
+                irr_v = irr(I_v, cf_v, n_v)
+                npv_v = npv(I_v, cf_v, r_v, n_v)
+                st.info(f"验证：IRR = {irr_v*100:.4f}%，NPV = {npv_v/UNIT_SCALE:.2f} {unit_label}")
+            else:
+                st.error(msg)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("氢能项目经济性分析平台 v5.1 稳定版")
+st.sidebar.caption("氢能项目经济性分析平台 v5.2")
