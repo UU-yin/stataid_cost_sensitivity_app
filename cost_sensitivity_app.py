@@ -118,7 +118,6 @@ def safe_eval(expr, var_dict):
         return np.nan
 
 def parse_item_amount(amount_str, var_dict):
-    """将金额字符串转换为内部万元单位。如果字符串是纯数字，直接转浮点；否则当作表达式求值（变量已是万元）"""
     if isinstance(amount_str, (int,float)):
         return float(amount_str)
     if not isinstance(amount_str, str):
@@ -310,51 +309,76 @@ def solve_param_for_target(target_type, target_value, param_key, base_params, al
             low = mid; f_low = f_mid
     return (low + high) / 2, True, "近似解"
 
-# ---------- 构建参数列表 ----------
+# ---------- 构建参数列表 (重构，无 lambda，彻底避免括号错误) ----------
+def _upd_I(p, v): p.update({'I': v})
+def _upd_r(p, v): p.update({'r_base': v})
+def _upd_n(p, v): p.update({'n_base': int(max(1, round(v)))})
+def _upd_C_op(p, v): p.update({'C_op': v})
+def _upd_Q(p, v): p.update({'Q': v})
+def _upd_loan_ratio(p, v): p.update({'loan_ratio': v})
+def _upd_loan_rate(p, v): p.update({'loan_rate': v})
+def _upd_loan_years(p, v): p.update({'loan_years': int(max(1, round(v)))})
+def _make_upd_rev_amount(idx):
+    def upd(p, v): p['rev_items'][idx].update({'amount': v})
+    return upd
+def _make_upd_rev_growth(idx):
+    def upd(p, v): p['rev_items'][idx].update({'growth': v})
+    return upd
+def _make_upd_cost_amount(idx):
+    def upd(p, v): p['cost_items'][idx].update({'amount': v})
+    return upd
+def _make_upd_cost_growth(idx):
+    def upd(p, v): p['cost_items'][idx].update({'growth': v})
+    return upd
+def _make_upd_var(k):
+    def upd(p, v): p['custom_vars'].update({k: v})
+    return upd
+def _make_upd_replace(idx):
+    def upd(p, v): p['replacements'][idx] = (p['replacements'][idx][0], v)
+    return upd
+def _make_upd_carbon(idx):
+    def upd(p, v): p['carbon_params'][idx] = v
+    return upd
+
 def build_all_param_specs(base_params, unit_label):
     specs = []
-    specs.append(('I', f'初始投资 ({unit_label})', base_params['I'], lambda p, v: p.update({'I': v})))
-    specs.append(('r_base', '折现率 r', base_params['r_base'], lambda p, v: p.update({'r_base': v})))
-    specs.append(('n_base', '项目寿命 (年)', base_params['n_base'], lambda p, v: p.update({'n_base': int(max(1, round(v))))}))
-    specs.append(('C_op', f'年运营成本 ({unit_label})', base_params['C_op'], lambda p, v: p.update({'C_op': v})))
-    if base_params.get('use_advanced_cf') and base_params.get('rev_items'):
-        for i, item in enumerate(base_params['rev_items']):
-            name = item['name']
-            specs.append((f'rev_{i}_amount', f'收益-{name} 金额', item['amount'],
-                          lambda p, v, idx=i: p['rev_items'][idx].update({'amount': v})))
-            specs.append((f'rev_{i}_growth', f'收益-{name} 增长率', item['growth'],
-                          lambda p, v, idx=i: p['rev_items'][idx].update({'growth': v})))
-    if base_params.get('use_advanced_cf') and base_params.get('cost_items'):
-        for i, item in enumerate(base_params['cost_items']):
-            name = item['name']
-            specs.append((f'cost_{i}_amount', f'支出-{name} 金额', item['amount'],
-                          lambda p, v, idx=i: p['cost_items'][idx].update({'amount': v})))
-            specs.append((f'cost_{i}_growth', f'支出-{name} 增长率', item['growth'],
-                          lambda p, v, idx=i: p['cost_items'][idx].update({'growth': v})))
+    specs.append(('I', f'初始投资 ({unit_label})', base_params['I'], _upd_I))
+    specs.append(('r_base', '折现率 r', base_params['r_base'], _upd_r))
+    specs.append(('n_base', '项目寿命 (年)', base_params['n_base'], _upd_n))
+    specs.append(('C_op', f'年运营成本 ({unit_label})', base_params['C_op'], _upd_C_op))
+    if base_params.get('use_advanced_cf'):
+        if base_params.get('rev_items'):
+            for i, item in enumerate(base_params['rev_items']):
+                name = item['name']
+                specs.append((f'rev_{i}_amount', f'收益-{name} 金额', item['amount'], _make_upd_rev_amount(i)))
+                specs.append((f'rev_{i}_growth', f'收益-{name} 增长率', item['growth'], _make_upd_rev_growth(i)))
+        if base_params.get('cost_items'):
+            for i, item in enumerate(base_params['cost_items']):
+                name = item['name']
+                specs.append((f'cost_{i}_amount', f'支出-{name} 金额', item['amount'], _make_upd_cost_amount(i)))
+                specs.append((f'cost_{i}_growth', f'支出-{name} 增长率', item['growth'], _make_upd_cost_growth(i)))
     for var_name, var_val in base_params.get('custom_vars', {}).items():
-        specs.append((f'var_{var_name}', f'变量-{var_name}', var_val,
-                      lambda p, v, k=var_name: p['custom_vars'].update({k: v})))
+        specs.append((f'var_{var_name}', f'变量-{var_name}', var_val, _make_upd_var(var_name)))
     if base_params.get('use_finance'):
-        specs.append(('loan_ratio', '贷款比例', base_params['loan_ratio'], lambda p, v: p.update({'loan_ratio': v})))
-        specs.append(('loan_rate', '贷款年利率', base_params['loan_rate'], lambda p, v: p.update({'loan_rate': v})))
-        specs.append(('loan_years', '贷款年限', base_params['loan_years'], lambda p, v: p.update({'loan_years': int(max(1, round(v))))}))
+        specs.append(('loan_ratio', '贷款比例', base_params['loan_ratio'], _upd_loan_ratio))
+        specs.append(('loan_rate', '贷款年利率', base_params['loan_rate'], _upd_loan_rate))
+        specs.append(('loan_years', '贷款年限', base_params['loan_years'], _upd_loan_years))
     if base_params.get('use_replacement') and base_params.get('replacements'):
         for i, (yr, cost) in enumerate(base_params['replacements']):
-            specs.append((f'replace_{i}_cost', f'替换{i+1}金额', cost,
-                          lambda p, v, idx=i: p['replacements'].__setitem__(idx, (p['replacements'][idx][0], v))))
+            specs.append((f'replace_{i}_cost', f'替换{i+1}金额', cost, _make_upd_replace(i)))
     if base_params.get('use_carbon') and base_params.get('carbon_params'):
         cp_list = base_params['carbon_params']
-        specs.append(('emission_factor', '排放因子', cp_list[0], lambda p, v: p['carbon_params'].__setitem__(0, v)))
-        specs.append(('carbon_price', '碳价', cp_list[1], lambda p, v: p['carbon_params'].__setitem__(1, v)))
-        specs.append(('green_cert_price', '绿证价格', cp_list[2], lambda p, v: p['carbon_params'].__setitem__(2, v)))
-        specs.append(('annual_green_gen', '自发绿电', cp_list[3], lambda p, v: p['carbon_params'].__setitem__(3, v)))
+        specs.append(('emission_factor', '排放因子', cp_list[0], _make_upd_carbon(0)))
+        specs.append(('carbon_price', '碳价', cp_list[1], _make_upd_carbon(1)))
+        specs.append(('green_cert_price', '绿证价格', cp_list[2], _make_upd_carbon(2)))
+        specs.append(('annual_green_gen', '自发绿电', cp_list[3], _make_upd_carbon(3)))
     return specs
 
 # ---------- 页面设置 ----------
 st.set_page_config(page_title="项目经济性分析平台", layout="wide")
 st.title("项目成本计算与敏感性分析平台")
 
-# ---------- 侧边栏 (所有key已唯一化) ----------
+# ---------- 侧边栏 ----------
 st.sidebar.header("📌 分析方法")
 analysis_scope = st.sidebar.selectbox("指标数量", ["单个","两个","三个"], index=1, key='scope_sel')
 all_targets = ["NPV","IRR","LCOH"]
@@ -416,7 +440,6 @@ if input_mode == "手动输入":
     else:
         Q = 1.0; C_op = 0.0
 
-    # 自定义变量
     with st.expander("🔢 自定义变量（用于公式）"):
         st.caption("定义中间变量，如 Q_green, P_green。金额列可使用表达式（如 Q_green * P_green）")
         if 'custom_vars_df' not in st.session_state:
@@ -433,7 +456,6 @@ if input_mode == "手动输入":
         custom_vars = {}
         for _, row in edited_vars.iterrows():
             if row['变量名'] and row['变量名'].strip():
-                # 注意：自定义变量数值也要乘以单位，因为用户是按显示单位输入的
                 custom_vars[row['变量名'].strip()] = row['数值'] * UNIT_SCALE
         st.session_state.custom_vars = custom_vars
 
@@ -473,7 +495,6 @@ if input_mode == "手动输入":
                 if row['项目名称']:
                     amount = row['金额']
                     growth = row['年增长率(%)']/100.0 if row['年增长率(%)'] else 0.0
-                    # 金额处理：如果是纯数字，乘以单位缩放；否则保留字符串（表达式）
                     try:
                         num_amt = float(amount)
                         amount = num_amt * UNIT_SCALE
@@ -508,7 +529,6 @@ if input_mode == "手动输入":
 
         cf_series = None
 
-    # 融资
     loan_ratio=0.0; loan_rate=0.0; loan_years=0; repay_method='等额本息'
     if use_finance:
         st.subheader("🏦 融资结构")
@@ -586,7 +606,7 @@ if input_mode == "手动输入" and st.session_state.params:
     c1.metric("现金流回收期", f"{pay_cash:.2f}年" if pay_cash!=float('inf') else "无法回收")
     c2.metric("会计回收期", f"{pay_account:.2f}年" if pay_account!=float('inf') else "无法回收")
 
-    # ---------- 逆向求解模块 ----------
+    # ---------- 逆向求解 ----------
     if use_irr_backsolve:
         st.header("🎯 单参数逆向求解与盈亏分析")
         all_specs = build_all_param_specs(base_params, unit_label)
@@ -634,7 +654,6 @@ if input_mode == "手动输入" and st.session_state.params:
                 else:
                     col_r3.metric("盈亏平衡值", "无解")
                 st.success(f"✅ {msg}：要使 IRR = {target_irr}%，参数 **{param_display}** 应为 **{disp_val}**")
-                # 验证
                 p_verify = deepcopy(st.session_state.params)
                 updater = key_to_updater.get(param_key)
                 if updater:
@@ -650,4 +669,4 @@ if input_mode == "手动输入" and st.session_state.params:
                 st.error(msg)
 
 st.sidebar.markdown("---")
-st.sidebar.caption("氢能项目经济性分析平台 v5.2")
+st.sidebar.caption("氢能项目经济性分析平台 v5.3")
